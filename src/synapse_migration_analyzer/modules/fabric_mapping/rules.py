@@ -449,6 +449,11 @@ def rules_for_pipelines(payload: dict[str, Any]) -> list[Recommendation]:
             fabric_action="Provision an on-premises data gateway and re-point linked connections.",
         ))
 
+    # Run-history derived signals.
+    run_history = payload.get("run_history")
+    if isinstance(run_history, dict):
+        out.extend(_rules_for_run_history(run_history))
+
     # v2 — expression-language compatibility findings.
     expr = payload.get("expression_findings") or []
     if expr:
@@ -488,6 +493,91 @@ def rules_for_pipelines(payload: dict[str, Any]) -> list[Recommendation]:
 
 def _action_for_activity(activity_type: str) -> str:
     return _ACTIVITY_ACTIONS.get(activity_type, "No direct equivalent in Fabric — refactor or replace.")
+
+
+def _rules_for_run_history(run_history: dict[str, Any]) -> list[Recommendation]:
+    """Surface Fabric-relevant signals from observed pipeline run statistics.
+
+    - Idle pipelines (no runs in the longest window): may not need migration now.
+    - Low success rate (28d window) on terminal runs: investigate before cutover.
+    - Heavy data movers (avg MB/run in 28d window) get a sizing hint.
+    """
+    out: list[Recommendation] = []
+    by_pipeline = run_history.get("by_pipeline") or []
+    if not by_pipeline:
+        return out
+
+    idle: list[str] = []
+    low_sr: list[tuple[str, float, int]] = []
+    heavy: list[tuple[str, float]] = []
+
+    for stats in by_pipeline:
+        pname = stats.get("pipeline") or "?"
+        windows = {w.get("window_days"): w for w in (stats.get("windows") or [])}
+        widest = max(windows) if windows else None
+        wide_w = windows.get(widest) if widest is not None else None
+        w28 = windows.get(28) or wide_w
+        if wide_w is not None and (wide_w.get("run_count") or 0) == 0:
+            idle.append(pname)
+            continue
+        if w28 is not None:
+            sr = w28.get("success_rate")
+            terminal = (w28.get("succeeded") or 0) + (w28.get("failed") or 0)
+            if sr is not None and sr < 0.95 and terminal >= 5:
+                low_sr.append((pname, sr, terminal))
+            avg_mb = w28.get("avg_data_moved_mb_per_run")
+            if avg_mb is not None and avg_mb >= 1024:  # >= 1 GB / run
+                heavy.append((pname, avg_mb))
+
+    if idle:
+        sample = ", ".join(idle[:5])
+        more = "" if len(idle) <= 5 else f" (+{len(idle) - 5} more)"
+        out.append(Recommendation(
+            id="pl.runs.idle",
+            area="pipelines.runs",
+            title=f"{len(idle)} pipeline(s) idle in observed window",
+            severity="info",
+            effort="low",
+            detail=f"No runs observed: {sample}{more}.",
+            fabric_action=(
+                "Confirm with owners whether these pipelines are still in use; "
+                "deprioritize or retire before migration to reduce scope."
+            ),
+        ))
+
+    for pname, sr, terminal in sorted(low_sr, key=lambda x: x[1]):
+        out.append(Recommendation(
+            id=f"pl.runs.low_success.{pname}",
+            area="pipelines.runs",
+            title=f"Pipeline {pname}: {sr * 100:.1f}% success (28d, n={terminal})",
+            severity="warning",
+            effort="medium",
+            target=pname,
+            detail="Failure rate exceeds 5% over the last 28 days.",
+            fabric_action=(
+                "Investigate root cause and stabilize before migration; failures will "
+                "carry over and may be harder to diagnose post-cutover."
+            ),
+        ))
+
+    if heavy:
+        # Single rollup recommendation; details list the offenders.
+        items = "; ".join(f"{p} ({mb:,.0f} MB/run)" for p, mb in
+                          sorted(heavy, key=lambda x: -x[1])[:5])
+        more = "" if len(heavy) <= 5 else f" (+{len(heavy) - 5} more)"
+        out.append(Recommendation(
+            id="pl.runs.heavy_data_movement",
+            area="pipelines.runs",
+            title=f"{len(heavy)} pipeline(s) move >=1 GB / run on average",
+            severity="info",
+            effort="medium",
+            detail=f"Top offenders: {items}{more}.",
+            fabric_action=(
+                "Factor sustained data movement into Fabric capacity sizing and "
+                "consider staging copies into OneLake to reduce egress."
+            ),
+        ))
+    return out
 
 
 _ACTIVITY_ACTIONS: dict[str, str] = {

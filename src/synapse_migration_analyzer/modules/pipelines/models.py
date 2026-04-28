@@ -88,6 +88,43 @@ class ScheduleMapping(BaseModel):
     summary: str | None = None
 
 
+# --- v3 -- pipeline run history -----------------------------------------------
+
+# Rolling windows (in days) reported per pipeline. The widest window also
+# determines the fetch range.
+RUN_STATS_WINDOWS_DAYS: tuple[int, ...] = (7, 14, 28, 90)
+
+
+class PipelineRunWindowStats(BaseModel):
+    window_days: int
+    run_count: int = 0
+    succeeded: int = 0
+    failed: int = 0
+    other: int = 0  # InProgress, Queued, Cancelled, etc.
+    success_rate: float | None = None      # succeeded / (succeeded + failed); None when both are zero
+    avg_duration_ms: float | None = None
+    p95_duration_ms: float | None = None
+    avg_data_moved_mb_per_run: float | None = None  # over runs that performed data movement
+    total_data_moved_mb: float | None = None        # None when pipeline has no data-movement activities
+
+
+class PipelineRunStats(BaseModel):
+    pipeline: str
+    has_data_movement: bool = False
+    last_run_at: datetime | None = None
+    last_run_status: str | None = None
+    windows: list[PipelineRunWindowStats] = Field(default_factory=list)
+
+
+class PipelineRunHistory(BaseModel):
+    window_start: datetime
+    window_end: datetime
+    fetched_run_count: int = 0
+    fetched_activity_run_count: int = 0
+    truncated: bool = False
+    by_pipeline: list[PipelineRunStats] = Field(default_factory=list)
+
+
 class PipelinesAnalysis(BaseModel):
     workspace_name: str
     subscription_id: str
@@ -103,6 +140,8 @@ class PipelinesAnalysis(BaseModel):
     # v2
     expression_findings: list[ExpressionFinding] = Field(default_factory=list)
     schedule_mappings: list[ScheduleMapping] = Field(default_factory=list)
+    # v3 — pipeline run history (None when collection skipped or unavailable)
+    run_history: PipelineRunHistory | None = None
     errors: list[str] = Field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:

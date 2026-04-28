@@ -6,7 +6,7 @@ Python tooling that inventories and analyzes **Azure Synapse Analytics** workspa
 > - `dedicated_pools` — dedicated SQL pool inventory, schema/table/index/usage/security/workload-management, T-SQL code-object capture, column-level collation audit, materialized-view inventory, statistics-freshness report, column stats, distribution-key advisor (skew + filter-selectivity heuristics), and a per-object "T-SQL surface gaps" rollup with stable code-object ids
 > - `serverless_pools` — built-in serverless SQL pool, databases, external data sources & external tables, top queries, daily data-scanned, cost estimate
 > - `spark_pools` — Apache Spark pool inventory & configuration, plus notebook and Spark-job-definition inventory
-> - `pipelines` — pipelines, linked services, datasets, triggers, integration runtimes, with activity-level Fabric-compatibility classification
+> - `pipelines` — pipelines, linked services, datasets, triggers, integration runtimes, with activity-level Fabric-compatibility classification, plus rolling 7/14/28/90-day **run-history statistics** (executions, success rate, avg duration, avg MB moved per Copy/Dataflow run)
 > - `monitoring` — historical Azure Monitor metrics for dedicated SQL pools (DWU, queries, connections)
 > - `storage` — ADLS / Storage account inventory (workspace-default Gen2 flagged), Azure Monitor capacity metrics (UsedCapacity, BlobCapacity), and dedicated SQL pool size in MB / GB
 > - `fabric_mapping` — aggregates the above and produces Fabric Warehouse migration recommendations (collation, T-SQL surface, activity gaps, sizing hints)

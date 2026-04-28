@@ -26,6 +26,82 @@ def _write_activities_csv(path: Path, rows: list[Activity]) -> Path | None:
     return path
 
 
+def _write_run_history_csvs(result: PipelinesAnalysis, out_dir: Path) -> list[Path]:
+    """Emit per-(pipeline, window) and per-pipeline summary CSVs."""
+    history = result.run_history
+    if history is None or not history.by_pipeline:
+        return []
+    detail_path = out_dir / "pipeline_run_stats.csv"
+    fields = [
+        "pipeline", "has_data_movement", "last_run_at", "last_run_status",
+        "window_days", "run_count", "succeeded", "failed", "other",
+        "success_rate", "avg_duration_ms", "p95_duration_ms",
+        "avg_data_moved_mb_per_run", "total_data_moved_mb",
+    ]
+    with detail_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        for stats in history.by_pipeline:
+            for w in stats.windows:
+                writer.writerow({
+                    "pipeline": stats.pipeline,
+                    "has_data_movement": stats.has_data_movement,
+                    "last_run_at": stats.last_run_at.isoformat() if stats.last_run_at else "",
+                    "last_run_status": stats.last_run_status or "",
+                    "window_days": w.window_days,
+                    "run_count": w.run_count,
+                    "succeeded": w.succeeded,
+                    "failed": w.failed,
+                    "other": w.other,
+                    "success_rate": "" if w.success_rate is None else f"{w.success_rate:.4f}",
+                    "avg_duration_ms": "" if w.avg_duration_ms is None else f"{w.avg_duration_ms:.0f}",
+                    "p95_duration_ms": "" if w.p95_duration_ms is None else f"{w.p95_duration_ms:.0f}",
+                    "avg_data_moved_mb_per_run": (
+                        "" if w.avg_data_moved_mb_per_run is None
+                        else f"{w.avg_data_moved_mb_per_run:.2f}"
+                    ),
+                    "total_data_moved_mb": (
+                        "" if w.total_data_moved_mb is None
+                        else f"{w.total_data_moved_mb:.2f}"
+                    ),
+                })
+
+    # Per-pipeline headline (pick the 28-day window when available).
+    summary_path = out_dir / "pipeline_run_summary.csv"
+    summary_fields = [
+        "pipeline", "has_data_movement", "last_run_at", "last_run_status",
+        "headline_window_days", "run_count", "succeeded", "failed",
+        "success_rate", "avg_duration_ms", "avg_data_moved_mb_per_run",
+    ]
+    with summary_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=summary_fields)
+        writer.writeheader()
+        for stats in history.by_pipeline:
+            headline = next(
+                (w for w in stats.windows if w.window_days == 28),
+                stats.windows[-1] if stats.windows else None,
+            )
+            if headline is None:
+                continue
+            writer.writerow({
+                "pipeline": stats.pipeline,
+                "has_data_movement": stats.has_data_movement,
+                "last_run_at": stats.last_run_at.isoformat() if stats.last_run_at else "",
+                "last_run_status": stats.last_run_status or "",
+                "headline_window_days": headline.window_days,
+                "run_count": headline.run_count,
+                "succeeded": headline.succeeded,
+                "failed": headline.failed,
+                "success_rate": "" if headline.success_rate is None else f"{headline.success_rate:.4f}",
+                "avg_duration_ms": "" if headline.avg_duration_ms is None else f"{headline.avg_duration_ms:.0f}",
+                "avg_data_moved_mb_per_run": (
+                    "" if headline.avg_data_moved_mb_per_run is None
+                    else f"{headline.avg_data_moved_mb_per_run:.2f}"
+                ),
+            })
+    return [detail_path, summary_path]
+
+
 def write_reports(result: PipelinesAnalysis, out_dir: Path, formats: Iterable[str]) -> list[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     fmts = {f.lower() for f in formats}
@@ -49,6 +125,9 @@ def write_reports(result: PipelinesAnalysis, out_dir: Path, formats: Iterable[st
             p = write_csv_rows(out_dir / fname, rows)
             if p:
                 written.append(p)
+        # Run history (if collected).
+        if result.run_history and result.run_history.by_pipeline:
+            written.extend(_write_run_history_csvs(result, out_dir))
 
     if "markdown" in fmts:
         unsupported_acts = [a for a in result.activities if a.support == "unsupported"]
@@ -142,9 +221,41 @@ def write_reports(result: PipelinesAnalysis, out_dir: Path, formats: Iterable[st
             for ir in result.integration_runtimes:
                 lines.append(f"| {ir.name} | {ir.type} |")
             lines.append("")
+        if result.run_history and result.run_history.by_pipeline:
+            lines.extend(_run_history_markdown(result))
         written.append(write_markdown(out_dir / "pipelines.md", lines))
 
     if "html" in fmts:
         written.append(write_html(result, out_dir))
 
     return written
+
+
+def _run_history_markdown(result: PipelinesAnalysis) -> list[str]:
+    history = result.run_history
+    assert history is not None
+    lines = [
+        "## Pipeline runtime statistics",
+        "",
+        f"- Window: {history.window_start.isoformat()} → {history.window_end.isoformat()}",
+        f"- Runs collected: {history.fetched_run_count}"
+        + (" (truncated)" if history.truncated else ""),
+        f"- Activity runs collected: {history.fetched_activity_run_count}",
+        "",
+        "| Pipeline | Window | Runs | Succeeded | Failed | Success rate | Avg duration (ms) | Avg MB / run |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for stats in history.by_pipeline:
+        for w in stats.windows:
+            sr = "—" if w.success_rate is None else f"{w.success_rate * 100:.1f}%"
+            avg_dur = "—" if w.avg_duration_ms is None else f"{w.avg_duration_ms:.0f}"
+            avg_mb = (
+                "—" if w.avg_data_moved_mb_per_run is None
+                else f"{w.avg_data_moved_mb_per_run:.2f}"
+            )
+            lines.append(
+                f"| {stats.pipeline} | {w.window_days}d | {w.run_count} | "
+                f"{w.succeeded} | {w.failed} | {sr} | {avg_dur} | {avg_mb} |"
+            )
+    lines.append("")
+    return lines

@@ -155,10 +155,27 @@ def analyze_spark_pools(ctx: click.Context, formats: tuple[str, ...]) -> None:
 @click.option("--formats", "-f", multiple=True,
               type=click.Choice(["json", "csv", "markdown", "html"], case_sensitive=False),
               default=_ALL_FORMATS, help="Report formats to emit.")
+@click.option("--since", default=None, metavar="<N>d",
+              help="Run-history window, e.g. '7d' or '90d'. Overrides SMA_PIPELINES_RUN_DAYS.")
+@click.option("--no-run-history", is_flag=True, default=False,
+              help="Skip the pipeline run-history fetch (counts / success rate / data moved).")
 @click.pass_context
-def analyze_pipelines(ctx: click.Context, formats: tuple[str, ...]) -> None:
+def analyze_pipelines(
+    ctx: click.Context,
+    formats: tuple[str, ...],
+    since: str | None,
+    no_run_history: bool,
+) -> None:
     """Inventory pipelines, linked services, datasets, triggers, integration runtimes."""
     cfg = ctx.obj["config"]
+    if since:
+        token = since.strip().lower()
+        days_str = token[:-1] if token.endswith("d") else token
+        if not days_str.isdigit():
+            raise click.BadParameter(f"Expected '<N>d' or '<N>', got {since!r}", param_hint="--since")
+        os.environ["SMA_PIPELINES_RUN_DAYS"] = days_str
+    if no_run_history:
+        os.environ["SMA_PIPELINES_RUN_HISTORY"] = "0"
     result = PipelinesAnalyzer(cfg).run()
     paths = write_pipelines_reports(result, cfg.output_dir, formats=[f.lower() for f in formats])
     _print_paths(paths)

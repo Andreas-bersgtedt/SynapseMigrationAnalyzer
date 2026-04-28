@@ -423,12 +423,29 @@ The service principal needs **Synapse Artifact User** (or higher) on the workspa
 
 ```powershell
 sma analyze-pipelines
+sma analyze-pipelines --since 28d            # narrower run-history window for this run
+sma analyze-pipelines --no-run-history       # skip the run-history fetch entirely
 ```
 
 Produces:
 - `pipelines.json`, `pipelines.md`, `pipelines.html`
 - `pipelines.csv`, `linked_services.csv`, `datasets.csv`, `triggers.csv`, `integration_runtimes.csv`
 - `pipeline_activities.csv` (one row per activity with support tier, generic reasons, instance-specific caveats, Fabric equivalent, migration action, doc URL)
+- `pipeline_run_stats.csv` — one row per `(pipeline, window)` for 7/14/28/90-day buckets
+- `pipeline_run_summary.csv` — one row per pipeline using the 28-day window as the headline
+
+### 4.4 Run-history statistics
+
+The analyzer pulls pipeline run history via `ArtifactsClient.pipeline_run.query_pipeline_runs_by_workspace` and aggregates it into rolling windows. For pipelines that statically contain a `Copy`, `ExecuteDataFlow` or `Lookup` activity, it also fetches activity-run outputs to compute average data-movement (MB/run from `dataRead` / `dataWritten` on Copy, `runStatus.metrics[*].bytes` on Dataflow).
+
+Tunable via env vars (and/or `--since` / `--no-run-history`):
+
+| Env var | Default | Notes |
+|---|---|---|
+| `SMA_PIPELINES_RUN_HISTORY` | `1` | Set to `0` to skip the fetch entirely |
+| `SMA_PIPELINES_RUN_DAYS` | `90` | Widest window (also caps the API range; 7/14/28 are clamped to it) |
+| `SMA_PIPELINES_RUN_LIMIT` | `5000` | Safety cap on total runs / activity rows fetched per call; sets `truncated=true` when reached |
+| `SMA_PIPELINES_ACTIVITY_RUNS` | `1` | Set to `0` to skip activity-run fetch (data-movement metrics will be `null`) |
 
 > **Compatibility detail.** When an activity is marked `partial`, the analyzer
 > does **not** stop at the tier label. For each known activity type it ships a
