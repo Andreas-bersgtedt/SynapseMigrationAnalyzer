@@ -196,10 +196,13 @@ def test_index_lists_available_and_missing(tmp_path: Path) -> None:
 
     # Shows ready pills for the two present modules
     assert text.count('class="pill ok">ready') == 2
-    # Shows missing pills for the five absent modules (storage was added)
-    assert text.count('class="pill warn">missing') == 5
+    # Shows missing pills for the remaining absent modules
+    # (5 original: serverless, pipelines, monitoring, storage, fabric_mapping
+    #  + 4 mid-term: governance, security, cost, fabric_validation
+    #  + 1 mid-term: run_delta)
+    assert text.count('class="pill warn">missing') == 10
     # Available count is reflected in the meta block
-    assert "2 of 7" in text
+    assert "2 of 12" in text
     # Sibling JSON link for dedicated_pools is rendered
     assert 'href="dedicated_pools.json"' in text
     # Ensures hint command is present for missing modules

@@ -80,7 +80,13 @@ sma map-to-fabric                                 # aggregates prior outputs
 
 sma analyze-all                                   # runs everything end-to-end (7 steps)
 sma analyze-all --skip monitoring --skip storage  # opt out of selected modules
+sma analyze-all --include governance --include security --include cost  # opt in to mid-term modules
 sma -v analyze-dedicated-pools                    # verbose
+
+# Mid-term modules (opt-in; emit JSON / CSV / Markdown / HTML)
+sma analyze-governance                            # RBAC + MPE + CMK + Purview, with findings
+sma analyze-security                              # firewall + AAD + TDE + credentials, with findings
+sma analyze-cost --months 6                       # consumption + Fabric TCO delta, with findings
 ```
 
 Outputs land in `./output/` (override via `SMA_OUTPUT_DIR`). Every analyzer emits JSON, CSV,
@@ -91,7 +97,7 @@ Markdown and HTML. After `analyze-all` (or via `sma index`) a top-level `index.h
 ## Tests
 
 ```powershell
-pytest -q          # ~92 unit tests, no Azure access required
+pytest -q          # 184 unit tests, no Azure access required
 sma doctor         # host + auth pre-flight (uses .env when present)
 ```
 
@@ -163,27 +169,44 @@ Polish and depth on what already exists.
 
 New modules and integrations once the core depth is in place.
 
+> **Status (v1.2.0 — production):** the four bullets below shipped as v0
+> scaffolding in 1.1.0 and were promoted to v1 in 1.2.0. They are now
+> first-class production capabilities alongside the seven core modules,
+> still opt-in via `analyze-all --include …` (or the dedicated
+> `sma analyze-<module>` subcommand). Each one ships full rules engines,
+> severity-tagged findings, per-module HTML reports, and documented
+> data-source / RBAC requirements (see [QUICKSTART.md](QUICKSTART.md) and
+> [CHANGELOG.md](CHANGELOG.md)).
+
 - **`governance` module** — workspace- and resource-level RBAC export (control plane +
-  data plane), managed-private-endpoint inventory, customer-managed-key configuration,
-  and **Microsoft Purview** lineage capture for the analyzed workspace.
+  data plane) with role-name resolution, managed-private-endpoint inventory,
+  customer-managed-key configuration, and **Microsoft Purview** lineage capture
+  for the analyzed workspace. **(v1: rules + HTML report)**
 - **`security` module** — firewall rules, AAD-only enforcement, TLS minimum version,
-  encryption-at-rest configuration, and a per-pool secrets/credentials inventory
-  (linked-service credential types only, never values).
+  encryption-at-rest configuration, AAD admin inventory, per-pool TDE state,
+  and a linked-service credential inventory with **inline-secret detection**
+  (literal `password` / `accountKey` / `sasToken` / `SecureString` vs. Key Vault
+  references — types and locations only, never values). **(v1: rules + HTML report)**
 - **`cost` module** — month-over-month consumption pull from
   Microsoft.Consumption / Cost Management for the workspace's resource group, broken down
-  by SKU and pool, paired with the `fabric_mapping` CU projection for a side-by-side TCO
-  delta.
-- **Fabric-side validation** — optional post-migration runner that connects to a target
-  Fabric Warehouse / Lakehouse and verifies object counts, row counts, collation, and a
-  sample of T-SQL surface findings actually resolved.
-- **Incremental / delta runs** — persist a run manifest (hash + timestamp per collector)
-  so subsequent `analyze-all` invocations can skip unchanged objects and produce a diff
-  report against the prior run.
+  by resource kind / pool / storage account, paired with the `fabric_mapping` CU
+  projection for a side-by-side TCO delta. **(v1: rules + HTML report)**
+  Requires the optional `azure-mgmt-costmanagement` extra (`pip install -e ".[cost]"`)
+  and **Cost Management Reader** on the subscription or workspace resource group.
+  Without the SDK or RBAC, the analyzer still runs but emits `cost.sdk_missing` /
+  `cost.collection_error` findings instead of live data.
+- **Incremental / delta runs** — persist a run manifest (hash + timestamp + record-count
+  peek per collector) so subsequent `analyze-all` invocations produce a diff report
+  against the prior run in markdown, HTML, and JSON forms.
+  **(v1: HTML + JSON delta + record-count peeks)**
 
 ### Long-term / exploratory
 
 Ideas that need design work or external dependencies.
 
+- **Fabric-side validation** — optional post-migration runner that connects to a target
+  Fabric Warehouse / Lakehouse and verifies object counts, row counts, collation, and a
+  sample of T-SQL surface findings actually resolved.
 - **Code conversion assist** — automated rewrite hints for the T-SQL surface gaps
   detected today (surrogate keys via `IDENTITY` → Fabric pattern, `MERGE` simplifications,
   unsupported hints, etc.). Suggestions only — never silent rewrites of customer code.

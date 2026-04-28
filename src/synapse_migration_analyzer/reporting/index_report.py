@@ -30,6 +30,16 @@ _MODULES: list[tuple[str, str, str, str]] = [
      "Storage account inventory (ADLS Gen2 flag), capacity (UsedCapacity / BlobCapacity), dedicated SQL pool size in MB / GB."),
     ("Fabric Migration Plan", "fabric_mapping", "sma map-to-fabric",
      "Readiness score, capacity projection, recommendations, migration runbook."),
+    ("Governance (mid-term)", "governance", "sma analyze-governance",
+     "RBAC, managed private endpoints, customer-managed keys, Purview lineage."),
+    ("Security (mid-term)", "security", "sma analyze-security",
+     "Firewall rules, AAD-only, TLS, encryption, credentials inventory, findings."),
+    ("Cost (mid-term)", "cost", "sma analyze-cost",
+     "Month-over-month consumption from Cost Management + Fabric capacity comparison."),
+    ("Fabric validation (mid-term)", "fabric_validation", "sma validate-fabric",
+     "Post-migration object/row/collation/T-SQL surface checks vs the source inventory."),
+    ("Run delta (mid-term)", "run_delta", "sma analyze-all",
+     "Side-by-side diff of artifact hashes / record counts vs the previous run."),
 ]
 
 _TEMPLATE = """<!doctype html>

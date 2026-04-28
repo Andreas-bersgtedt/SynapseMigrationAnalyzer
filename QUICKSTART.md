@@ -11,7 +11,12 @@ A **module-based** walkthrough of the Synapse Migration Analyzer. Each module is
 | 5 | `monitoring`       | ✅ Available | `sma analyze-monitoring`       | [src/.../modules/monitoring/](src/synapse_migration_analyzer/modules/monitoring) |
 | 6 | `storage`          | ✅ Available | `sma analyze-storage`          | [src/.../modules/storage/](src/synapse_migration_analyzer/modules/storage) |
 | 7 | `fabric_mapping`   | ✅ Available | `sma map-to-fabric`            | [src/.../modules/fabric_mapping/](src/synapse_migration_analyzer/modules/fabric_mapping) |
-| ★ | _all_              | —            | `sma analyze-all`              | runs 1→7 in order, then refreshes `index.html` |
+| 8 | `governance` (v1.2)        | ✅ Available | `sma analyze-governance`       | [src/.../modules/governance/](src/synapse_migration_analyzer/modules/governance) |
+| 9 | `security`   (v1.2)        | ✅ Available | `sma analyze-security`         | [src/.../modules/security/](src/synapse_migration_analyzer/modules/security) |
+| 10 | `cost`       (v1.2)       | ✅ Available | `sma analyze-cost`             | [src/.../modules/cost/](src/synapse_migration_analyzer/modules/cost) |
+| 11 | `fabric_validation` (v0)  | ✅ Available | `sma validate-fabric`         | [src/.../modules/fabric_validation/](src/synapse_migration_analyzer/modules/fabric_validation) |
+| ★ | _all_              | —            | `sma analyze-all`              | runs 1→7 + opt-in mid-term modules, refreshes `index.html`, emits run manifest + delta |
+| 🔄 | _delta_            | —            | `sma run-delta`                | re-emits `run_manifest.json` + `run_delta.{md,html,json}` against the previous run |
 | 🔗 | _index_            | —            | `sma index`                    | (re)builds the `index.html` landing page in `SMA_OUTPUT_DIR` |
 | ⚙ | _self-check_       | —            | `sma doctor`                   | host + auth pre-flight ([doctor.py](src/synapse_migration_analyzer/doctor.py)) |
 
@@ -40,7 +45,13 @@ cd SynapseMigrationAnalyzer\SynapseMigrationAnalyzer
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -e ".[dev]"
+
+# Optional: enable live Cost Management queries for the `cost` module
+pip install -e ".[cost]"
 ```
+
+> The `cost` extra installs `azure-mgmt-costmanagement`. Without it, `sma analyze-cost`
+> will run but emit a `cost.sdk_missing` finding instead of live data.
 
 Verify the CLI is on the path:
 
@@ -122,6 +133,7 @@ Azure RBAC and **Synapse RBAC** are *separate*. Being Owner of the subscription 
 | **Azure ARM (control plane)** | Pool definitions, Spark pool ARM details, dedicated/serverless SQL pool listing | **Reader** | Subscription, resource group, **or** workspace resource (any of these) |
 | **Synapse artifacts (data plane)** — `*.dev.azuresynapse.net` | `analyze-pipelines`, `analyze-spark-pools` (notebooks, SJDs, linked services, datasets, triggers) | **Synapse Artifact User** (read-only) or **Synapse User** | Synapse Studio → **Manage → Access control** at workspace scope |
 | **Azure Monitor metrics** | `analyze-monitoring` | **Monitoring Reader** | Subscription or resource group containing the workspace |
+| **Azure Cost Management** | `analyze-cost` | **Cost Management Reader** | Subscription or the workspace's resource group |
 | **SQL endpoints** (dedicated + serverless) | `analyze-dedicated-pools`, `analyze-serverless-pools` | SQL `CREATE USER [<sp-name>] FROM EXTERNAL PROVIDER;` + `db_datareader` | Inside each database (run as a SQL admin) |
 
 Grant Synapse RBAC via **Synapse Studio**:
@@ -600,6 +612,74 @@ To add a new rule, append a function to [rules.py](src/synapse_migration_analyze
 
 ---
 
+## Module 10 — `cost` (v1.2)
+
+Aggregates Azure Cost Management consumption for the workspace's resource group, attributes
+spend by resource kind / pool / storage account, compares the Synapse run-rate against the
+Fabric capacity projection produced by Module 7, and emits severity-tagged findings.
+
+### 10.1 Where the data comes from
+
+| Area | Source | File |
+|---|---|---|
+| Monthly consumption rows (cost + usage by `ResourceId` / `MeterCategory` / `ServiceName`) | **Azure Cost Management** REST API via `azure-mgmt-costmanagement` (`CostManagementClient.query.usage`) at scope `/subscriptions/<sub>/resourceGroups/<rg>` | [cost_client.py](src/synapse_migration_analyzer/modules/cost/cost_client.py) |
+| Resource-kind classification (`dedicated_pool` / `spark_pool` / `synapse_workspace` / `storage` / `other`) | derived from each row's `ResourceId` | [cost_client.py](src/synapse_migration_analyzer/modules/cost/cost_client.py) |
+| Fabric SKU TCO comparison | reads `output/fabric_mapping.json` (`cu_projection`) — no live calls | [fabric_compare.py](src/synapse_migration_analyzer/modules/cost/fabric_compare.py) |
+| Findings (savings / increase / month-over-month spikes / kind concentration / no-data branches) | pure-Python rules engine | [rules.py](src/synapse_migration_analyzer/modules/cost/rules.py) |
+
+### 10.2 Module-specific prerequisites
+
+1. **Optional Python extra** — install `azure-mgmt-costmanagement`:
+
+    ```powershell
+    pip install -e ".[cost]"
+    ```
+
+   Without it, `sma analyze-cost` runs but emits a `cost.sdk_missing` finding (medium) and
+   no live data.
+
+2. **RBAC** — the service principal needs **Cost Management Reader** on the subscription
+   or the workspace's resource group. `Reader` alone is not enough; Cost Management is a
+   separate provider:
+
+    ```powershell
+    az role assignment create `
+      --assignee <CLIENT_ID> `
+      --role "Cost Management Reader" `
+      --scope /subscriptions/<SUB_ID>/resourceGroups/<RG>
+    ```
+
+3. **Tunable env vars:**
+
+   | Env var | Default | Effect |
+   |---|---|---|
+   | `SMA_COST_MONTHS` | `3` | Window: last *N* full months + month-to-date |
+   | `SMA_COST_DISABLE_LIVE` | unset | When `1`/`true`/`yes`, skip the SDK call entirely (emits `cost.live_disabled` info finding) |
+
+### 10.3 Run & outputs
+
+```powershell
+sma analyze-cost
+sma analyze-cost --months 6        # widen the window for one run
+```
+
+Produces (under `./output/`):
+- `cost.json`, `cost.md`, `cost.html`
+- `cost_by_resource_kind.csv`, `cost_findings.csv`
+
+### 10.4 Diagnosing "No cost rows captured"
+
+The rules engine surfaces the underlying reason in the finding `rule_id`:
+
+| `rule_id` | Severity | Meaning |
+|---|---|---|
+| `cost.sdk_missing` | medium | The optional `azure-mgmt-costmanagement` SDK is not installed |
+| `cost.live_disabled` | info | `SMA_COST_DISABLE_LIVE` is set |
+| `cost.collection_error` | medium | The Cost Management API call raised — see `errors[]` in `cost.json` (most often `AuthorizationFailed` → missing **Cost Management Reader**) |
+| `cost.no_data` | info | The SDK call succeeded but the window genuinely had no rows. Try `SMA_COST_MONTHS=6` |
+
+---
+
 ## End-to-end
 
 ```powershell
@@ -660,7 +740,13 @@ A new CLI subcommand is registered in [cli.py](src/synapse_migration_analyzer/cl
 | `pipelines` v3 | Per-activity parameter binding analysis, expression-language compatibility checks |
 | `fabric_mapping` v3 | Auto-generated migration runbook with sequenced steps + cost projection |
 | `monitoring` v2 | Log Analytics / KQL queries (long-running queries, top users), 30–90 day windows |
-| `governance` (new) | Workspace-level RBAC and Purview lineage export |
+
+> **Mid-term modules already shipped (v1):** `governance` (RBAC + MPE + CMK + Purview), `security`
+> (firewall + AAD admins + per-pool TDE + linked-service inline-secret detection), `cost`
+> (Cost Management consumption + Fabric SKU TCO delta + month-over-month spike detection),
+> `fabric_validation` (post-migration object/row/collation/T-SQL surface checks), and
+> **Incremental / delta runs** (run manifest + markdown/HTML/JSON delta with record-count peeks)
+> — see the per-module CLI commands in the table at the top.
 
 > Note: `dedicated_pools` v2 (column collation audit, distribution-key advisor with skew + filter
 > selectivity, materialized-view inventory, statistics freshness, T-SQL surface gap rollup with
@@ -680,10 +766,20 @@ sma analyze-serverless-pools
 sma analyze-spark-pools
 sma analyze-pipelines
 sma analyze-monitoring
+sma analyze-storage
 sma map-to-fabric
 
-# Everything end-to-end (also refreshes index.html)
+# Mid-term modules (v1)
+sma analyze-governance
+sma analyze-security
+sma analyze-cost              # requires .[cost] extra for live data
+sma validate-fabric           # post-migration validation
+
+# Everything end-to-end (also refreshes index.html and emits run manifest + delta)
 sma analyze-all
+
+# Just compare the current artifacts vs the previous run
+sma run-delta
 
 # Just rebuild the top-level landing page
 sma index

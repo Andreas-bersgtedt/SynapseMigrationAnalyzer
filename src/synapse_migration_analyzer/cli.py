@@ -14,13 +14,21 @@ from rich.logging import RichHandler
 from . import __version__
 from .config import load_config
 from .doctor import render_report, run_checks
+from .modules.cost.analyzer import CostAnalyzer
+from .modules.cost.reporting import write_reports as write_cost_reports
 from .modules.dedicated_pools.analyzer import DedicatedPoolsAnalyzer
 from .modules.fabric_mapping.analyzer import FabricMappingAnalyzer
 from .modules.fabric_mapping.reporting import write_reports as write_fabric_reports
+from .modules.fabric_validation.analyzer import FabricValidationAnalyzer
+from .modules.fabric_validation.reporting import write_reports as write_fabric_validation_reports
+from .modules.governance.analyzer import GovernanceAnalyzer
+from .modules.governance.reporting import write_reports as write_governance_reports
 from .modules.monitoring.analyzer import MonitoringAnalyzer
 from .modules.monitoring.reporting import write_reports as write_monitoring_reports
 from .modules.pipelines.analyzer import PipelinesAnalyzer
 from .modules.pipelines.reporting import write_reports as write_pipelines_reports
+from .modules.security.analyzer import SecurityAnalyzer
+from .modules.security.reporting import write_reports as write_security_reports
 from .modules.serverless_pools.analyzer import ServerlessPoolsAnalyzer
 from .modules.serverless_pools.reporting import write_reports as write_serverless_reports
 from .modules.spark_pools.analyzer import SparkPoolsAnalyzer
@@ -29,6 +37,15 @@ from .modules.storage.analyzer import StorageAnalyzer
 from .modules.storage.reporting import write_reports as write_storage_reports
 from .reporting import write_reports as write_dedicated_reports
 from .reporting.index_report import write_index
+from .reporting.run_manifest import (
+    build_manifest,
+    diff_manifests,
+    load_manifest,
+    save_manifest,
+    write_delta_html,
+    write_delta_json,
+    write_delta_report,
+)
 
 console = Console()
 log = logging.getLogger("sma")
@@ -42,7 +59,11 @@ EXIT_CONFIG_ERROR = 1
 EXIT_PARTIAL_FAILURES = 2
 EXIT_DOCTOR_FAILED = 3
 
-_SKIPPABLE = ("dedicated_pools", "serverless_pools", "spark_pools", "pipelines", "monitoring", "storage", "fabric_mapping")
+_SKIPPABLE = (
+    "dedicated_pools", "serverless_pools", "spark_pools", "pipelines",
+    "monitoring", "storage", "fabric_mapping",
+    "governance", "security", "cost", "fabric_validation",
+)
 
 
 class _JsonFormatter(logging.Formatter):
@@ -233,15 +254,89 @@ def analyze_storage(ctx: click.Context, formats: tuple[str, ...]) -> None:
         sys.exit(EXIT_PARTIAL_FAILURES)
 
 
+@cli.command("analyze-governance")
+@click.option("--formats", "-f", multiple=True,
+              type=click.Choice(["json", "csv", "markdown", "html"], case_sensitive=False),
+              default=_ALL_FORMATS, help="Report formats to emit.")
+@click.pass_context
+def analyze_governance(ctx: click.Context, formats: tuple[str, ...]) -> None:
+    """[mid-term] RBAC, managed private endpoints, CMK, Purview lineage + findings."""
+    cfg = ctx.obj["config"]
+    result = GovernanceAnalyzer(cfg).run()
+    paths = write_governance_reports(result, cfg.output_dir, formats=[f.lower() for f in formats])
+    _print_paths(paths)
+    if result.errors:
+        sys.exit(EXIT_PARTIAL_FAILURES)
+
+
+@cli.command("analyze-security")
+@click.option("--formats", "-f", multiple=True,
+              type=click.Choice(["json", "csv", "markdown", "html"], case_sensitive=False),
+              default=_ALL_FORMATS, help="Report formats to emit.")
+@click.pass_context
+def analyze_security(ctx: click.Context, formats: tuple[str, ...]) -> None:
+    """[mid-term] Firewall rules, AAD-only / TLS, AAD admins, pool TDE, credential inventory."""
+    cfg = ctx.obj["config"]
+    result = SecurityAnalyzer(cfg).run()
+    paths = write_security_reports(result, cfg.output_dir, formats=[f.lower() for f in formats])
+    _print_paths(paths)
+    if result.errors:
+        sys.exit(EXIT_PARTIAL_FAILURES)
+
+
+@cli.command("analyze-cost")
+@click.option("--formats", "-f", multiple=True,
+              type=click.Choice(["json", "csv", "markdown", "html"], case_sensitive=False),
+              default=_ALL_FORMATS, help="Report formats to emit.")
+@click.option("--months", default=None, type=int, metavar="N",
+              help="Number of months to pull from Cost Management. Overrides SMA_COST_MONTHS.")
+@click.pass_context
+def analyze_cost(ctx: click.Context, formats: tuple[str, ...], months: int | None) -> None:
+    """[mid-term] Month-over-month consumption + Fabric capacity comparison + findings."""
+    cfg = ctx.obj["config"]
+    if months is not None:
+        os.environ["SMA_COST_MONTHS"] = str(months)
+    result = CostAnalyzer(cfg).run()
+    paths = write_cost_reports(result, cfg.output_dir, formats=[f.lower() for f in formats])
+    _print_paths(paths)
+    if result.errors:
+        sys.exit(EXIT_PARTIAL_FAILURES)
+
+
+@cli.command("validate-fabric")
+@click.option("--formats", "-f", multiple=True,
+              type=click.Choice(["json", "csv", "markdown"], case_sensitive=False),
+              default=("json", "csv", "markdown"), help="Report formats to emit.")
+@click.pass_context
+def validate_fabric(ctx: click.Context, formats: tuple[str, ...]) -> None:
+    """[mid-term v0] Compare prior dedicated_pools.json against a live Fabric Warehouse."""
+    cfg = ctx.obj["config"]
+    result = FabricValidationAnalyzer(cfg).run()
+    paths = write_fabric_validation_reports(result, cfg.output_dir, formats=[f.lower() for f in formats])
+    _print_paths(paths)
+    if result.errors:
+        sys.exit(EXIT_PARTIAL_FAILURES)
+
+
 @cli.command("analyze-all")
 @click.option("--skip", "skip", multiple=True,
               type=click.Choice(_SKIPPABLE, case_sensitive=False),
               help="Skip a module (repeatable). Example: --skip monitoring --skip spark_pools")
+@click.option("--include", "include", multiple=True,
+              type=click.Choice(("governance", "security", "cost", "fabric_validation"),
+                                case_sensitive=False),
+              help="Opt in to a mid-term scaffolding module (repeatable). "
+                   "Example: --include governance --include security")
 @click.pass_context
-def analyze_all(ctx: click.Context, skip: tuple[str, ...]) -> None:
+def analyze_all(ctx: click.Context, skip: tuple[str, ...], include: tuple[str, ...]) -> None:
     """Run every analyzer (dedicated, serverless, spark, pipelines, monitoring, storage) then map-to-fabric."""
     cfg = ctx.obj["config"]
     skipped = {s.lower() for s in skip}
+    included = {i.lower() for i in include}
+    # Mid-term modules are opt-in: skip them unless --include'd.
+    for opt_in in ("governance", "security", "cost", "fabric_validation"):
+        if opt_in not in included:
+            skipped.add(opt_in)
     all_paths: list = []
     partial_failure = False
 
@@ -272,11 +367,52 @@ def analyze_all(ctx: click.Context, skip: tuple[str, ...]) -> None:
     _step("[7/7] fabric mapping", "fabric_mapping", lambda: write_fabric_reports(
         FabricMappingAnalyzer(cfg).run(), cfg.output_dir, formats=list(_ALL_FORMATS)))
 
+    # Mid-term scaffolding modules — opt-in via --include or env.
+    _step("[+] governance", "governance", lambda: write_governance_reports(
+        GovernanceAnalyzer(cfg).run(), cfg.output_dir, formats=list(_ALL_FORMATS)))
+    _step("[+] security", "security", lambda: write_security_reports(
+        SecurityAnalyzer(cfg).run(), cfg.output_dir, formats=list(_ALL_FORMATS)))
+    _step("[+] cost", "cost", lambda: write_cost_reports(
+        CostAnalyzer(cfg).run(), cfg.output_dir, formats=list(_ALL_FORMATS)))
+    _step("[+] fabric_validation", "fabric_validation", lambda: write_fabric_validation_reports(
+        FabricValidationAnalyzer(cfg).run(), cfg.output_dir, formats=["json", "csv", "markdown"]))
+
     # Always (re)build the index so users land on a single navigable page.
     try:
         all_paths.append(write_index(cfg.output_dir))
     except Exception as exc:  # noqa: BLE001
         log.warning("index.html build failed (continuing): %s", exc)
+        partial_failure = True
+
+    # Mid-term scaffolding: persist a run manifest and emit a delta report
+    # against the previous one (if present).
+    try:
+        prev_manifest = load_manifest(cfg.output_dir)
+        manifest = build_manifest(
+            cfg.output_dir,
+            workspace_name=cfg.azure.workspace_name,
+            subscription_id=cfg.azure.subscription_id,
+            resource_group=cfg.azure.resource_group,
+            sma_version=__version__,
+            file_names=[
+                "dedicated_pools.json", "serverless_pools.json", "spark_pools.json",
+                "pipelines.json", "monitoring.json", "storage.json", "fabric_mapping.json",
+                "governance.json", "security.json", "cost.json", "fabric_validation.json",
+            ],
+        )
+        all_paths.append(save_manifest(manifest, cfg.output_dir))
+        diff = diff_manifests(prev_manifest, manifest)
+        all_paths.append(write_delta_report(diff, cfg.output_dir))
+        all_paths.append(write_delta_html(
+            diff, cfg.output_dir,
+            prev_manifest=prev_manifest, curr_manifest=manifest,
+        ))
+        all_paths.append(write_delta_json(
+            diff, cfg.output_dir,
+            prev_manifest=prev_manifest, curr_manifest=manifest,
+        ))
+    except Exception as exc:  # noqa: BLE001
+        log.warning("run manifest / delta failed (continuing): %s", exc)
         partial_failure = True
 
     _print_paths(all_paths)
@@ -297,6 +433,39 @@ def build_index(ctx: click.Context) -> None:
     cfg = ctx.obj["config"]
     path = write_index(cfg.output_dir)
     _print_paths([path])
+
+
+@cli.command("run-delta")
+@click.pass_context
+def run_delta(ctx: click.Context) -> None:
+    """[mid-term] Compare the current run against the previous run_manifest.json.
+
+    Emits ``run_manifest.json`` (refreshed), ``run_delta.md``,
+    ``run_delta.html``, and ``run_delta.json`` in the output directory.
+    """
+    cfg = ctx.obj["config"]
+    prev = load_manifest(cfg.output_dir)
+    curr = build_manifest(
+        cfg.output_dir,
+        workspace_name=cfg.azure.workspace_name,
+        subscription_id=cfg.azure.subscription_id,
+        resource_group=cfg.azure.resource_group,
+        sma_version=__version__,
+        file_names=[
+            "dedicated_pools.json", "serverless_pools.json", "spark_pools.json",
+            "pipelines.json", "monitoring.json", "storage.json", "fabric_mapping.json",
+            "governance.json", "security.json", "cost.json", "fabric_validation.json",
+        ],
+    )
+    saved = save_manifest(curr, cfg.output_dir)
+    diff = diff_manifests(prev, curr)
+    paths = [
+        saved,
+        write_delta_report(diff, cfg.output_dir),
+        write_delta_html(diff, cfg.output_dir, prev_manifest=prev, curr_manifest=curr),
+        write_delta_json(diff, cfg.output_dir, prev_manifest=prev, curr_manifest=curr),
+    ]
+    _print_paths(paths)
 
 
 def main() -> None:

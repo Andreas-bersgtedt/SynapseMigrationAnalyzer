@@ -28,3 +28,5 @@ reports/
 *.log
 
 .pytest-tmp/
+
+.pytest_tmp/
