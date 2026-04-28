@@ -1,0 +1,256 @@
+"""HTML report writer for the pipelines module."""
+from __future__ import annotations
+
+from collections import defaultdict
+from pathlib import Path
+from typing import Any
+
+from jinja2 import Environment, select_autoescape
+
+from ...reporting.html_common import SHARED_CSS, SHARED_FILTER_JS
+from .models import PipelinesAnalysis
+
+_TEMPLATE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>Synapse Migration Analyzer &mdash; Pipelines</title>
+<style>{{ css }}</style></head><body>
+<h1>Synapse Migration Analyzer &mdash; Pipelines</h1>
+<div class="meta">
+ <div><strong>Workspace:</strong> {{ r.workspace_name }}</div>
+ <div><strong>Artifacts endpoint:</strong> <code>{{ r.artifacts_endpoint }}</code></div>
+ <div><strong>Generated:</strong> {{ r.generated_at.isoformat() }}</div>
+</div>
+
+<div class="grid-2">
+ <div class="stat"><div class="label">Pipelines</div><div class="value">{{ r.pipelines|length }}</div></div>
+ <div class="stat"><div class="label">Activities</div><div class="value">{{ r.activities|length }}</div></div>
+ <div class="stat"><div class="label">Unsupported activities</div><div class="value">{{ extras.unsupported_acts|length }}</div></div>
+ <div class="stat"><div class="label">Linked services</div><div class="value">{{ r.linked_services|length }}</div></div>
+ <div class="stat"><div class="label">Datasets</div><div class="value">{{ r.datasets|length }}</div></div>
+ <div class="stat"><div class="label">Triggers</div><div class="value">{{ r.triggers|length }}</div></div>
+ <div class="stat"><div class="label">Integration runtimes</div><div class="value">{{ r.integration_runtimes|length }}</div></div>
+ <div class="stat"><div class="label">Expression findings</div><div class="value">{{ r.expression_findings|length }}</div></div>
+</div>
+
+<div class="toc">
+ <strong>Sections:</strong>
+ <a href="#pipelines">Pipelines</a>
+ {% if extras.unsupported_acts %}<a href="#unsup-acts">Unsupported activities</a>{% endif %}
+ {% if extras.partial_acts %}<a href="#partial-acts">Partial activities</a>{% endif %}
+ {% if extras.unsupported_ls %}<a href="#unsup-ls">Unsupported linked services</a>{% endif %}
+ {% if r.linked_services %}<a href="#ls">Linked services</a>{% endif %}
+ {% if r.datasets %}<a href="#datasets">Datasets</a>{% endif %}
+ {% if r.triggers %}<a href="#triggers">Triggers</a>{% endif %}
+ {% if r.schedule_mappings %}<a href="#schedules">Schedule mapping</a>{% endif %}
+ {% if r.integration_runtimes %}<a href="#ir">Integration runtimes</a>{% endif %}
+ {% if r.expression_findings %}<a href="#expr">Expression findings</a>{% endif %}
+ {% if r.errors %}<a href="#errors">Errors</a>{% endif %}
+</div>
+
+{% if r.errors %}
+<h2 id="errors">Collection errors</h2>
+<details open><summary class="err">{{ r.errors|length }} error(s)</summary>
+ <ul class="err">{% for e in r.errors %}<li>{{ e }}</li>{% endfor %}</ul></details>
+{% endif %}
+
+<h2 id="pipelines">Pipelines ({{ r.pipelines|length }})</h2>
+{% if r.pipelines %}
+<input class="filter" type="text" placeholder="Filter pipelines" oninput="smaFilter(this,'tbl-pl')"/>
+<table id="tbl-pl">
+ <tr><th>Name</th><th>Folder</th><th class="num">Activities</th><th class="num">Unsupported</th>
+  <th class="num">Partial</th><th>Activity types</th></tr>
+ {% for p in r.pipelines %}
+ {% set acts = extras.acts_by_pipeline.get(p.name, []) %}
+ <tr>
+  <td>
+   <details><summary><code>{{ p.name }}</code></summary>
+    {% if acts %}
+    <table>
+     <tr><th>Activity</th><th>Type</th><th>Support</th><th>Refs</th><th>Why / what's partial</th></tr>
+     {% for a in acts %}
+     <tr>
+      <td><code>{{ a.name }}</code></td>
+      <td>{{ a.type }}</td>
+      <td>
+       {% if a.support == 'supported' %}<span class="pill ok">{{ a.support }}</span>
+       {% elif a.support == 'partial' %}<span class="pill warn">{{ a.support }}</span>
+       {% elif a.support == 'unsupported' %}<span class="pill err">{{ a.support }}</span>
+       {% else %}<span class="pill info">{{ a.support }}</span>{% endif %}
+      </td>
+      <td class="small">
+       {% if a.references_pipeline %}pl:<code>{{ a.references_pipeline }}</code><br>{% endif %}
+       {% if a.references_dataset %}ds:<code>{{ a.references_dataset }}</code><br>{% endif %}
+       {% if a.references_linked_service %}ls:<code>{{ a.references_linked_service }}</code>{% endif %}
+      </td>
+      <td class="small">
+       {% if a.fabric_equivalent %}<div><strong>Fabric:</strong> {{ a.fabric_equivalent }}</div>{% endif %}
+       {% if a.support_reasons %}<ul class="muted">{% for r in a.support_reasons %}<li>{{ r }}</li>{% endfor %}</ul>{% endif %}
+       {% if a.support_caveats %}<ul>{% for c in a.support_caveats %}<li><strong>this instance:</strong> {{ c }}</li>{% endfor %}</ul>{% endif %}
+       {% if a.migration_action %}<div><strong>Action:</strong> {{ a.migration_action }}</div>{% endif %}
+       {% if a.doc_url %}<div><a href="{{ a.doc_url }}" target="_blank" rel="noopener">docs &rarr;</a></div>{% endif %}
+      </td>
+     </tr>
+     {% endfor %}
+    </table>
+    {% endif %}
+   </details>
+  </td>
+  <td>{{ p.folder or '' }}</td>
+  <td class="num">{{ p.activity_count }}</td>
+  <td class="num">{% if p.unsupported_activity_count %}<span class="pill err">{{ p.unsupported_activity_count }}</span>{% endif %}</td>
+  <td class="num">{% if p.partial_activity_count %}<span class="pill warn">{{ p.partial_activity_count }}</span>{% endif %}</td>
+  <td class="small">{{ ', '.join(p.activity_types) }}</td>
+ </tr>
+ {% endfor %}
+</table>
+{% endif %}
+
+{% if extras.unsupported_acts %}
+<h2 id="unsup-acts">Fabric-unsupported activities ({{ extras.unsupported_acts|length }})</h2>
+{% for a in extras.unsupported_acts %}
+<details class="card err" open>
+ <summary><code>{{ a.pipeline }}</code> &rarr; <code>{{ a.name }}</code> &mdash; <strong>{{ a.type }}</strong></summary>
+ <div>
+  {% if a.fabric_equivalent %}<div><strong>Fabric equivalent:</strong> {{ a.fabric_equivalent }}</div>
+  {% else %}<div><strong>Fabric equivalent:</strong> <em>none</em></div>{% endif %}
+  {% if a.support_reasons %}<div><strong>Why unsupported:</strong><ul>{% for r in a.support_reasons %}<li>{{ r }}</li>{% endfor %}</ul></div>{% endif %}
+  {% if a.support_caveats %}<div><strong>Instance caveats:</strong><ul>{% for c in a.support_caveats %}<li>{{ c }}</li>{% endfor %}</ul></div>{% endif %}
+  {% if a.migration_action %}<div><strong>Action:</strong> {{ a.migration_action }}</div>{% endif %}
+  {% if a.doc_url %}<div><a href="{{ a.doc_url }}" target="_blank" rel="noopener">Microsoft docs &rarr;</a></div>{% endif %}
+ </div>
+</details>
+{% endfor %}
+{% endif %}
+
+{% if extras.partial_acts %}
+<h2 id="partial-acts">Partially-compatible activities ({{ extras.partial_acts|length }})</h2>
+<p class="muted">These activities exist in Fabric Data Factory but with reduced functionality, narrower connector support, or different config. Each entry lists <em>what specifically</em> is partial, and (when applicable) which property of <em>this instance</em> triggered the warning.</p>
+{% for a in extras.partial_acts %}
+<details class="card warn">
+ <summary><code>{{ a.pipeline }}</code> &rarr; <code>{{ a.name }}</code> &mdash; <strong>{{ a.type }}</strong>
+  {% if a.support_caveats %}<span class="pill warn">{{ a.support_caveats|length }} instance caveat{{ 's' if a.support_caveats|length != 1 else '' }}</span>{% endif %}
+ </summary>
+ <div>
+  {% if a.fabric_equivalent %}<div><strong>Fabric equivalent:</strong> {{ a.fabric_equivalent }}</div>{% endif %}
+  {% if a.support_reasons %}<div><strong>Why partial (general):</strong><ul>{% for r in a.support_reasons %}<li>{{ r }}</li>{% endfor %}</ul></div>{% endif %}
+  {% if a.support_caveats %}<div><strong>Caveats from this instance's properties:</strong><ul>{% for c in a.support_caveats %}<li>{{ c }}</li>{% endfor %}</ul></div>{% endif %}
+  {% if a.migration_action %}<div><strong>Action:</strong> {{ a.migration_action }}</div>{% endif %}
+  {% if a.doc_url %}<div><a href="{{ a.doc_url }}" target="_blank" rel="noopener">Microsoft docs &rarr;</a></div>{% endif %}
+ </div>
+</details>
+{% endfor %}
+{% endif %}
+
+{% if extras.unsupported_ls %}
+<h2 id="unsup-ls">Fabric-unsupported linked services ({{ extras.unsupported_ls|length }})</h2>
+<table>
+ <tr><th>Name</th><th>Type</th><th>Connect via</th></tr>
+ {% for ls in extras.unsupported_ls %}
+ <tr><td><code>{{ ls.name }}</code></td><td>{{ ls.type }}</td><td>{{ ls.connect_via or '' }}</td></tr>
+ {% endfor %}
+</table>
+{% endif %}
+
+{% if r.linked_services %}
+<h2 id="ls">Linked services ({{ r.linked_services|length }})</h2>
+<input class="filter" type="text" placeholder="Filter linked services" oninput="smaFilter(this,'tbl-ls')"/>
+<table id="tbl-ls">
+ <tr><th>Name</th><th>Type</th><th>Connect via</th><th>Fabric supported</th></tr>
+ {% for ls in r.linked_services %}
+ <tr><td><code>{{ ls.name }}</code></td><td>{{ ls.type }}</td><td>{{ ls.connect_via or '' }}</td>
+  <td>{% if ls.fabric_supported %}<span class="pill ok">yes</span>{% else %}<span class="pill err">no</span>{% endif %}</td></tr>
+ {% endfor %}
+</table>
+{% endif %}
+
+{% if r.datasets %}
+<h2 id="datasets">Datasets ({{ r.datasets|length }})</h2>
+<input class="filter" type="text" placeholder="Filter datasets" oninput="smaFilter(this,'tbl-ds')"/>
+<table id="tbl-ds">
+ <tr><th>Name</th><th>Type</th><th>Linked service</th><th>Folder</th></tr>
+ {% for d in r.datasets %}
+ <tr><td><code>{{ d.name }}</code></td><td>{{ d.type }}</td><td>{{ d.linked_service or '' }}</td><td>{{ d.folder or '' }}</td></tr>
+ {% endfor %}
+</table>
+{% endif %}
+
+{% if r.triggers %}
+<h2 id="triggers">Triggers ({{ r.triggers|length }})</h2>
+<table>
+ <tr><th>Name</th><th>Type</th><th>Runtime state</th><th>Pipelines</th></tr>
+ {% for t in r.triggers %}
+ <tr><td><code>{{ t.name }}</code></td><td>{{ t.type }}</td>
+  <td>{% if t.runtime_state == 'Started' %}<span class="pill ok">{{ t.runtime_state }}</span>
+   {% elif t.runtime_state %}<span class="pill warn">{{ t.runtime_state }}</span>{% endif %}</td>
+  <td class="small">{{ ', '.join(t.pipelines) }}</td></tr>
+ {% endfor %}
+</table>
+{% endif %}
+
+{% if r.schedule_mappings %}
+<h2 id="schedules">Schedule mapping</h2>
+<table>
+ <tr><th>Trigger</th><th>Synapse type</th><th>Fabric kind</th><th>Summary</th><th>Notes</th></tr>
+ {% for m in r.schedule_mappings %}
+ <tr><td><code>{{ m.trigger_name }}</code></td><td>{{ m.trigger_type }}</td>
+  <td><span class="pill info">{{ m.fabric_kind }}</span></td>
+  <td class="small">{{ m.summary or '' }}</td>
+  <td class="small muted">{{ '; '.join(m.notes) }}</td></tr>
+ {% endfor %}
+</table>
+{% endif %}
+
+{% if r.integration_runtimes %}
+<h2 id="ir">Integration runtimes ({{ r.integration_runtimes|length }})</h2>
+<table>
+ <tr><th>Name</th><th>Type</th><th>Description</th></tr>
+ {% for i in r.integration_runtimes %}
+ <tr><td><code>{{ i.name }}</code></td>
+  <td>{% if i.type == 'SelfHosted' %}<span class="pill warn">{{ i.type }}</span>{% else %}<span class="pill ok">{{ i.type }}</span>{% endif %}</td>
+  <td class="small muted">{{ i.description or '' }}</td></tr>
+ {% endfor %}
+</table>
+{% endif %}
+
+{% if r.expression_findings %}
+<h2 id="expr">Expression findings ({{ r.expression_findings|length }})</h2>
+<input class="filter" type="text" placeholder="Filter findings" oninput="smaFilter(this,'tbl-expr')"/>
+<table id="tbl-expr">
+ <tr><th>Severity</th><th>Pipeline</th><th>Activity</th><th>Rule</th><th>Expression</th></tr>
+ {% for f in r.expression_findings %}
+ <tr>
+  <td>{% set sev = f.severity %}<span class="pill {{ 'err' if sev == 'blocker' else ('warn' if sev == 'warning' else 'info') }}">{{ sev }}</span></td>
+  <td><code>{{ f.pipeline }}</code></td>
+  <td><code>{{ f.activity }}</code></td>
+  <td><code>{{ f.rule_id }}</code> {{ f.label }}</td>
+  <td><code class="small">{{ f.expression }}</code></td>
+ </tr>
+ {% endfor %}
+</table>
+{% endif %}
+
+<div class="footer">Generated by Synapse Migration Analyzer.</div>
+<script>{{ js }}</script>
+</body></html>
+"""
+
+
+def _build_extras(result: PipelinesAnalysis) -> dict[str, Any]:
+    acts_by_pipeline: dict[str, list[Any]] = defaultdict(list)
+    for a in result.activities:
+        acts_by_pipeline[a.pipeline].append(a)
+    return {
+        "acts_by_pipeline": dict(acts_by_pipeline),
+        "unsupported_acts": [a for a in result.activities if a.support == "unsupported"],
+        "partial_acts": [a for a in result.activities if a.support == "partial"],
+        "unsupported_ls": [ls for ls in result.linked_services if not ls.fabric_supported],
+    }
+
+
+def write_html(result: PipelinesAnalysis, out_dir: Path) -> Path:
+    env = Environment(autoescape=select_autoescape(["html", "xml"]))
+    template = env.from_string(_TEMPLATE)
+    html = template.render(r=result, extras=_build_extras(result), css=SHARED_CSS, js=SHARED_FILTER_JS)
+    path = out_dir / "pipelines.html"
+    path.write_text(html, encoding="utf-8")
+    return path

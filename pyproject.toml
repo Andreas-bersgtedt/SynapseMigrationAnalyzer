@@ -1,0 +1,51 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "synapse-migration-analyzer"
+version = "1.0.0"
+description = "Analyze Azure Synapse Analytics workspaces to assess Microsoft Fabric Warehouse migration readiness."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Andreas Bergstedt" }]
+maintainers = [{ name = "Andreas Bergstedt" }]
+dependencies = [
+    "azure-identity>=1.17",
+    "azure-mgmt-synapse>=2.0.0",
+    "azure-mgmt-resource>=23.1",
+    "azure-mgmt-monitor>=6.0.2",
+    "azure-mgmt-storage>=21.1.0",
+    "azure-synapse-artifacts>=0.20",
+    "pyodbc>=5.1",
+    "pydantic>=2.7",
+    "rich>=13.7",
+    "click>=8.1",
+    "jinja2>=3.1",
+    "python-dotenv>=1.0",
+    "six>=1.16",            # transitive dep needed by azure-mgmt-synapse models
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.5",
+    "mypy>=1.10",
+]
+
+[project.scripts]
+sma = "synapse_migration_analyzer.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/synapse_migration_analyzer"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
