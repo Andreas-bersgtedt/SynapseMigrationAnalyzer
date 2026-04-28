@@ -39,7 +39,7 @@
 [CmdletBinding()]
 param(
     [string]$InstallRoot = (Get-Location).Path,
-    [string]$RepoUrl     = 'https://github.com/anbergst_microsoft/SynapseMigrationAnalyzer.git',
+    [string]$RepoUrl     = 'https://github.com/Andreas-bersgtedt/SynapseMigrationAnalyzer.git',
     [string]$PythonExe   = 'python',
     [switch]$SkipClone
 )
