@@ -129,6 +129,12 @@ sma doctor         # host + auth pre-flight (uses .env when present)
 `sma serve --with-api` starts a local FastAPI backend (mounted at `/api/*`) and
 the React SPA on the same origin. Analysts can:
 
+> 📖 **Full UI walkthrough:** see the [User guide](docs/user-guide/README.md)
+> for a per-page reference (Dashboard, Code objects, Recommendations,
+> Runbook, Delta, Run, Runs, Diff, Configuration), troubleshooting matrix
+> and FAQ.
+
+
 - Edit `.env` from the browser (Configuration page) — secret values are
   write-only; reads return only `set` / `unset`.
 - Kick off analyzer runs (Run page) with a module checklist and watch live

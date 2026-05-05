@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No changes yet._
 
+## [2.0.1] - 2026-05-05
+
+**Documentation patch.** No code changes.
+
+- New in-repo **User guide** at [`docs/user-guide/`](docs/user-guide/README.md):
+  15 chapters covering orientation (getting started, static vs control-plane
+  modes, the run picker), every SPA page (Dashboard, Code objects,
+  Recommendations, Runbook, Delta, Run, Runs history, Diff, Configuration),
+  and reference material (troubleshooting matrix, security & deployment,
+  FAQ).
+- README and QUICKSTART now link the user guide from their control-plane
+  sections.
+
 ## [2.0.0] - 2026-05-05
 
 **Major release** — promotes the browser-driven control plane from an

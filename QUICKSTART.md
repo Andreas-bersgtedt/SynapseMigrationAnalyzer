@@ -745,6 +745,9 @@ For analysts who would rather drive the analyzer from a browser than the CLI,
 `sma serve --with-api` boots a local FastAPI backend plus the SPA on the same
 origin. It is **opt-in** (extra install) and **loopback-only by default**.
 
+> 📖 **Full UI walkthrough:** see the [User guide](docs/user-guide/README.md)
+> for a per-page reference, troubleshooting matrix and FAQ.
+
 ```powershell
 # Install the [web] extras (one-off)
 pip install -e ".[web]"
