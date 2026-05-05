@@ -46,6 +46,28 @@
 .PARAMETER NonInteractive
     Skip the interactive branch prompt and use `Branch` (or `main`) directly.
 
+.PARAMETER SkipDoctor
+    Skip the final `sma doctor --offline` smoke-test. The smoke test runs
+    by default since v1.2.x because it is offline / read-only.
+
+.PARAMETER SkipWebBuild
+    Skip the `npm install` + `npm run build` step that produces `web/dist`.
+    By default the SPA bundle is built so `sma serve --with-api` has a UI to
+    mount. Pass this switch on hosts without Node.js when you don't need the
+    browser control plane.
+
+.PARAMETER NoServe
+    Skip the final `sma serve --with-api --static-dir web/dist` launch.
+    By default, when `sma doctor --offline` succeeds and `web/dist` exists,
+    the script ends by starting the local control-plane server in the
+    foreground (Ctrl+C to stop).
+
+.NOTES
+    All optional pip extras (`dev`, `cost`, `web`) are always installed so
+    every analyzer module, the FastAPI control plane (`sma serve --with-api`),
+    and the dev / test toolchain are ready out of the box. The web SPA in
+    `web/` is also built by default (requires Node.js / npm on PATH).
+
 .EXAMPLE
     PS> .\quickstart.ps1
 
@@ -67,8 +89,20 @@ param(
     [string]$PythonExe       = 'python',
     [switch]$SkipClone,
     [string]$Branch,
-    [switch]$NonInteractive
+    [switch]$NonInteractive,
+    [switch]$SkipDoctor,
+    [switch]$SkipWebBuild,
+    [switch]$NoServe
 )
+
+# All optional extras defined in pyproject.toml are mandatory: the quickstart
+# bootstraps a fully-featured environment (CLI + control-plane API + dev tools).
+$Extras = @('dev', 'cost', 'web')
+
+# Capture the directory the user launched the script from BEFORE any
+# Set-Location call moves us into the cloned repo. Used by the .env
+# bootstrap step to copy a pre-existing .env from the launch dir.
+$LaunchDir = (Get-Location).Path
 
 if (-not $RepoUrl) {
     $RepoUrl = if ($Repo -eq 'Private') {
@@ -197,11 +231,43 @@ function Select-RemoteBranch {
 # --- Prereq checks (QUICKSTART section 0.1) ---------------------------------
 Write-Step "Checking host prerequisites"
 Assert-Command 'git'      'Install Git from https://git-scm.com/download/win and reopen PowerShell.'
-Assert-Command $PythonExe 'Install Python 3.11+ from https://www.python.org/downloads/ and reopen PowerShell.'
+Assert-Command $PythonExe 'Install Python 3.12+ from https://www.python.org/downloads/ and reopen PowerShell.'
 
 $pyVersion = & $PythonExe --version 2>&1
 Write-Host "    git    : $(git --version)"
 Write-Host "    python : $pyVersion"
+
+# Enforce >=3.12 (matches pyproject.toml requires-python). Fail fast with a
+# clear message rather than letting `pip install` blow up later.
+$pyMatch = [regex]::Match([string]$pyVersion, '(\d+)\.(\d+)(?:\.(\d+))?')
+if (-not $pyMatch.Success) {
+    throw "Could not parse Python version from '$pyVersion'."
+}
+$pyMajor = [int]$pyMatch.Groups[1].Value
+$pyMinor = [int]$pyMatch.Groups[2].Value
+if ($pyMajor -lt 3 -or ($pyMajor -eq 3 -and $pyMinor -lt 12)) {
+    throw ("Python $pyMajor.$pyMinor detected; this project requires Python 3.12+. " +
+           "Install a newer Python from https://www.python.org/downloads/ and pass it via -PythonExe.")
+}
+
+# Soft-check: ODBC Driver 18 for SQL Server (required by pyodbc at runtime,
+# but not by pip install). Warn-only so users without SQL workloads can still
+# get a working install.
+try {
+    if (Get-Command Get-OdbcDriver -ErrorAction SilentlyContinue) {
+        $odbc = Get-OdbcDriver -Name 'ODBC Driver 18 for SQL Server' -ErrorAction SilentlyContinue
+        if (-not $odbc) {
+            Write-Host "    odbc   : ODBC Driver 18 NOT installed - 'sma analyze-*' against SQL pools will fail at runtime." -ForegroundColor Yellow
+            Write-Host "             Install: https://learn.microsoft.com/sql/connect/odbc/download-odbc-driver-for-sql-server" -ForegroundColor Yellow
+        } else {
+            Write-Host "    odbc   : $($odbc.Name)"
+        }
+    } else {
+        Write-Host "    odbc   : (Get-OdbcDriver unavailable on this host; skipping check)" -ForegroundColor DarkGray
+    }
+} catch {
+    Write-Host "    odbc   : check failed ($($_.Exception.Message)); skipping." -ForegroundColor DarkGray
+}
 
 # --- Ensure InstallRoot exists ----------------------------------------------
 if (-not (Test-Path $InstallRoot)) {
@@ -225,9 +291,22 @@ if ($SkipClone) {
     }
 } else {
     if (Test-Path $repoDir) {
-        Write-Step "Repo already present at '$repoDir' - skipping clone"
+        Write-Step "Repo already present at '$repoDir'"
         if ($Branch) {
-            Write-Host "    (-Branch '$Branch' ignored; repo already cloned)" -ForegroundColor DarkGray
+            Write-Step "Switching existing clone to branch '$Branch'"
+            Push-Location $repoDir
+            try {
+                git fetch origin --quiet
+                if ($LASTEXITCODE -ne 0) { throw "git fetch failed (exit $LASTEXITCODE)." }
+                git checkout $Branch
+                if ($LASTEXITCODE -ne 0) { throw "git checkout '$Branch' failed (exit $LASTEXITCODE)." }
+                git pull --ff-only
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Host "    (git pull --ff-only failed; staying on local '$Branch'.)" -ForegroundColor Yellow
+                }
+            } finally {
+                Pop-Location
+            }
         }
     } else {
         # Resolve which branch to clone.
@@ -272,12 +351,111 @@ Write-Step "Activating venv"
 
 # --- Install (editable + dev extras) ----------------------------------------
 Write-Step "Upgrading pip"
-python -m pip install --upgrade pip
+python -m pip install --upgrade pip --quiet
 if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed (exit $LASTEXITCODE)." }
 
-Write-Step "pip install -e .[dev]"
-pip install -e ".[dev]"
-if ($LASTEXITCODE -ne 0) { throw "pip install failed (exit $LASTEXITCODE)." }
+# Build the editable install spec from $Extras. All extras are mandatory.
+$extrasJoined = ($Extras | Where-Object { $_ } | Sort-Object -Unique) -join ','
+$installSpec  = ".[${extrasJoined}]"
+Write-Step "pip install -e $installSpec  (extras: $extrasJoined)"
+try {
+    pip install -e $installSpec
+    if ($LASTEXITCODE -ne 0) { throw "pip install failed (exit $LASTEXITCODE)." }
+} catch {
+    Write-Host "" -ForegroundColor Red
+    Write-Host "    pip install failed. The .venv may be in a partial state." -ForegroundColor Red
+    Write-Host "    To recover, remove it and rerun:" -ForegroundColor Red
+    Write-Host "        Remove-Item -Recurse -Force '$venvDir'" -ForegroundColor Red
+    Write-Host "        .\quickstart.ps1" -ForegroundColor Red
+    throw
+}
+
+# --- Build the web SPA bundle (web/dist) -----------------------------------
+# `sma serve --with-api --static-dir web/dist` mounts the prebuilt SPA at /,
+# so build it eagerly here. Skipped only if Node/npm aren't available — pip
+# install + CLI still work in that case.
+$webDir = Join-Path $repoDir 'web'
+if ($SkipWebBuild) {
+    Write-Step "Skipping web SPA build (-SkipWebBuild)"
+} elseif (Test-Path (Join-Path $webDir 'package.json')) {
+    if (Get-Command npm -ErrorAction SilentlyContinue) {
+        $nodeVersion = (& node --version 2>$null)
+        $npmVersion  = (& npm --version  2>$null)
+        Write-Host "    node   : $nodeVersion"
+        Write-Host "    npm    : $npmVersion"
+
+        Push-Location $webDir
+        try {
+            $lockFile        = Join-Path $webDir 'package-lock.json'
+            $nodeModulesDir  = Join-Path $webDir 'node_modules'
+            $needsInstall    = -not (Test-Path $nodeModulesDir)
+            if (-not $needsInstall -and (Test-Path $lockFile)) {
+                $lockTime = (Get-Item $lockFile).LastWriteTimeUtc
+                $modTime  = (Get-Item $nodeModulesDir).LastWriteTimeUtc
+                if ($lockTime -gt $modTime) { $needsInstall = $true }
+            }
+
+            if ($needsInstall) {
+                if (Test-Path $lockFile) {
+                    Write-Step "npm ci (reproducible install from package-lock.json)"
+                    npm ci
+                    if ($LASTEXITCODE -ne 0) {
+                        Write-Host "    (npm ci failed; falling back to 'npm install')" -ForegroundColor Yellow
+                        npm install
+                    }
+                } else {
+                    Write-Step "npm install (no package-lock.json; generates one)"
+                    npm install
+                }
+                if ($LASTEXITCODE -ne 0) { throw "npm install failed (exit $LASTEXITCODE)." }
+            } else {
+                Write-Step "web/node_modules up to date - skipping npm install"
+            }
+
+            Write-Step "npm run build (web/dist)"
+            npm run build
+            if ($LASTEXITCODE -ne 0) { throw "npm run build failed (exit $LASTEXITCODE)." }
+            Write-Host "    web bundle: $(Join-Path $webDir 'dist')" -ForegroundColor DarkGray
+        } finally {
+            Pop-Location
+        }
+    } else {
+        Write-Host "" -ForegroundColor Yellow
+        Write-Host "    npm not found on PATH - skipping SPA build." -ForegroundColor Yellow
+        Write-Host "    Install Node.js 20+ from https://nodejs.org/ then run:" -ForegroundColor Yellow
+        Write-Host "        cd web; npm install; npm run build" -ForegroundColor Yellow
+        Write-Host "    (the FastAPI backend still works without a built SPA, but" -ForegroundColor Yellow
+        Write-Host "     'sma serve --with-api --static-dir web/dist' won't have a UI to mount.)" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "    (no web/package.json found; skipping SPA build)" -ForegroundColor DarkGray
+}
+
+# --- Bootstrap .env (QUICKSTART section 0.4) --------------------------------
+# Priority:
+#   1. If repo already has .env, leave it alone.
+#   2. Else if launch dir has a .env, copy it in (and it isn't the same file).
+#   3. Else copy .env.example to .env so the user has a template to edit.
+$targetEnv = Join-Path $repoDir '.env'
+$exampleEnv = Join-Path $repoDir '.env.example'
+if (Test-Path $targetEnv) {
+    Write-Step ".env already present in repo - leaving it untouched"
+} else {
+    $launchEnv = Join-Path $LaunchDir '.env'
+    $launchResolved = if (Test-Path $launchEnv) { (Resolve-Path $launchEnv).Path } else { $null }
+    $targetResolvedDir = (Resolve-Path $repoDir).Path
+    $launchResolvedDir = (Resolve-Path $LaunchDir).Path
+    if ($launchResolved -and $launchResolvedDir -ne $targetResolvedDir) {
+        Write-Step "Copying existing .env from launch directory into repo"
+        Write-Host "    source : $launchEnv"
+        Copy-Item -Path $launchEnv -Destination $targetEnv
+    } elseif (Test-Path $exampleEnv) {
+        Write-Step "Bootstrapping .env from .env.example (edit before running 'sma analyze-*')"
+        Copy-Item -Path $exampleEnv -Destination $targetEnv
+    } else {
+        Write-Host "    (.env.example not found; skip .env bootstrap)" -ForegroundColor DarkGray
+    }
+}
 
 # --- Verify CLI -------------------------------------------------------------
 Write-Step "Verifying sma CLI"
@@ -285,6 +463,41 @@ sma --version
 if ($LASTEXITCODE -ne 0) { throw "sma --version failed (exit $LASTEXITCODE)." }
 sma --help | Select-Object -First 25
 
+# --- Smoke test (offline doctor) --------------------------------------------
+$doctorOk = $true
+if (-not $SkipDoctor) {
+    Write-Step "Running 'sma doctor --offline' smoke test"
+    sma doctor --offline
+    if ($LASTEXITCODE -ne 0) {
+        $doctorOk = $false
+        Write-Host "    (sma doctor --offline reported issues - review the output above.)" -ForegroundColor Yellow
+    }
+}
+
 Write-Host ""
 Write-Host "Done. Next: see QUICKSTART.md section 0.3 (service principal) and section 0.4 (.env)." -ForegroundColor Green
-Write-Host "        Run 'sma doctor --offline' to smoke-test the install (section 0.5)."            -ForegroundColor Green
+Write-Host "        Edit '$targetEnv' before running 'sma analyze-*'."                              -ForegroundColor Green
+
+# --- Launch the local control plane ----------------------------------------
+# When everything is healthy, hand the user a running web UI on
+# http://127.0.0.1:8000 instead of asking them to type one more command.
+$webDist = Join-Path $repoDir 'web\dist'
+if ($NoServe) {
+    Write-Host ""
+    Write-Host "Skipping 'sma serve' launch (-NoServe)." -ForegroundColor DarkGray
+    Write-Host "Start it manually with: sma serve --with-api --static-dir web\dist" -ForegroundColor DarkGray
+} elseif (-not $doctorOk) {
+    Write-Host ""
+    Write-Host "Not launching 'sma serve' because 'sma doctor --offline' reported issues." -ForegroundColor Yellow
+    Write-Host "Fix the issues above, then run: sma serve --with-api --static-dir web\dist" -ForegroundColor Yellow
+} elseif (-not (Test-Path (Join-Path $webDist 'index.html'))) {
+    Write-Host ""
+    Write-Host "Not launching 'sma serve' because '$webDist\index.html' is missing." -ForegroundColor Yellow
+    Write-Host "Build the SPA first (cd web; npm install; npm run build), then run:" -ForegroundColor Yellow
+    Write-Host "    sma serve --with-api --static-dir web\dist" -ForegroundColor Yellow
+} else {
+    Write-Host ""
+    Write-Step "Launching 'sma serve --with-api --static-dir web\dist' (Ctrl+C to stop)"
+    Write-Host "    open http://127.0.0.1:8000 in your browser." -ForegroundColor Green
+    sma serve --with-api --static-dir 'web\dist'
+}

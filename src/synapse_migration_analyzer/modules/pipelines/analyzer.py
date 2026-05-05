@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import logging
 import os
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 
 from ...config import AppConfig
@@ -113,6 +115,19 @@ class PipelinesAnalyzer:
         days = _env_int("SMA_PIPELINES_RUN_DAYS", default=max_window, minimum=1)
         run_limit = _env_int("SMA_PIPELINES_RUN_LIMIT", default=5000, minimum=1)
         fetch_activity_runs = _env_flag("SMA_PIPELINES_ACTIVITY_RUNS", default=True)
+        # Sampling cap: per-pipeline upper bound on how many terminal runs we
+        # actually fetch activity-runs for. The downstream stats only use the
+        # *average* MB/run per pipeline-window, so a sample is enough — set
+        # to 0 to disable the cap (back to old behaviour).
+        ar_sample_per_pipeline = _env_int(
+            "SMA_PIPELINES_ACTIVITY_RUN_SAMPLE", default=50, minimum=0,
+        )
+        # Number of parallel HTTP fetches for activity-runs. Synapse Artifacts
+        # is sync HTTP, so a small thread pool gives a big win without hitting
+        # service throttling.
+        concurrency = _env_int(
+            "SMA_PIPELINES_RUN_CONCURRENCY", default=8, minimum=1,
+        )
 
         end = datetime.now(timezone.utc)
         start = end - timedelta(days=days)
@@ -133,17 +148,15 @@ class PipelinesAnalyzer:
             [a.model_dump() for a in result.activities]
         )
 
-        # For runs whose pipeline is in dm_set, fetch activity runs to compute
-        # MB/run. We only fetch for *succeeded or failed* terminal runs (in-progress
-        # runs would otherwise inflate API calls without yielding stable metrics).
+        # Decide which runs to query activity-runs for. Only terminal
+        # (succeeded/failed) runs of pipelines in ``dm_set`` are candidates;
+        # in-progress runs would skew metrics anyway. Within each pipeline we
+        # take the most recent ``ar_sample_per_pipeline`` runs (sorted by
+        # ``run_end`` desc) to bound the REST work on busy workspaces.
         activity_runs_by_run_id: dict[str, list[dict]] = {}
         if fetch_activity_runs and dm_set and runs:
-            ar_budget = run_limit  # reuse same cap for activity rows
-            ar_count = 0
+            candidates_by_pipeline: dict[str, list[dict]] = defaultdict(list)
             for run in runs:
-                if ar_count >= ar_budget:
-                    history.truncated = True
-                    break
                 pname = run.get("pipeline_name")
                 run_id = run.get("run_id")
                 status = (run.get("status") or "").lower()
@@ -151,21 +164,54 @@ class PipelinesAnalyzer:
                     continue
                 if status not in ("succeeded", "failed"):
                     continue
+                candidates_by_pipeline[pname].append(run)
+
+            selected: list[dict] = []
+            for pname, plist in candidates_by_pipeline.items():
+                # Sort by run_end desc — fall back to run_start if missing.
+                plist.sort(
+                    key=lambda r: r.get("run_end") or r.get("run_start") or datetime.min,
+                    reverse=True,
+                )
+                if ar_sample_per_pipeline > 0:
+                    plist = plist[:ar_sample_per_pipeline]
+                selected.extend(plist)
+
+            # Cap total activity-run rows like before so a runaway pipeline
+            # cannot pull unbounded data into memory.
+            ar_budget = run_limit
+            ar_count = 0
+
+            def _fetch_one(run: dict) -> tuple[str, list[dict] | None, Exception | None]:
+                run_id = run["run_id"]
+                pname = run["pipeline_name"]
                 try:
                     ars = list(client.iter_activity_runs(
                         pipeline_name=pname,
                         run_id=run_id,
                         start=start,
                         end=end,
-                        limit=ar_budget - ar_count,
+                        limit=ar_budget,
                     ))
+                    return run_id, ars, None
                 except Exception as exc:  # noqa: BLE001
-                    log.debug("activity_runs[%s/%s] failed: %s", pname, run_id, exc)
-                    result.errors.append(format_error(
-                        f"activity_runs[{pname}/{run_id}]", exc,
-                    ))
-                    continue
-                if ars:
+                    return run_id, None, exc
+
+            with ThreadPoolExecutor(max_workers=concurrency) as pool:
+                futures = [pool.submit(_fetch_one, run) for run in selected]
+                for fut in as_completed(futures):
+                    run_id, ars, err = fut.result()
+                    if err is not None:
+                        log.debug("activity_runs[%s] failed: %s", run_id, err)
+                        result.errors.append(format_error(
+                            f"activity_runs[{run_id}]", err,
+                        ))
+                        continue
+                    if not ars:
+                        continue
+                    if ar_count >= ar_budget:
+                        history.truncated = True
+                        continue
                     activity_runs_by_run_id[run_id] = ars
                     ar_count += len(ars)
         history.fetched_activity_run_count = sum(

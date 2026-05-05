@@ -6,6 +6,206 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_No changes yet._
+
+## [2.0.0] - 2026-05-05
+
+**Major release** — promotes the browser-driven control plane from an
+opt-in preview to a first-class surface alongside the CLI. The `sma serve
+--with-api` server, the React SPA, the run repository, the live progress
+stream and the workspace-vitals Dashboard are all now part of the
+supported product. The CLI, JSON / CSV / Markdown / HTML deliverables and
+module contracts are unchanged from 1.2.x — every report file in
+`output/` keeps the same shape — so existing automation continues to work
+without modification.
+
+**Highlights**
+
+- One-shot Windows bootstrapper (`quickstart.ps1`) that installs every
+  optional extra, builds the React SPA and launches the control plane.
+- Browser control plane: Configuration / Run / Runs / Diff pages plus a
+  workspace-level Dashboard with readiness, T-SQL surface, storage and
+  pipeline-activity panels.
+- Hardened SPA: deep-link / refresh-safe routing, run-id persistence
+  across tabs, fixed Diff endpoint, faster and partial-failure-tolerant
+  pipelines run-history collection.
+
+**Upgrade notes**
+
+- `pip install -e ".[web]"` (or rerun `quickstart.ps1`) is required to
+  pick up the FastAPI / SSE dependencies for `sma serve --with-api`.
+- Rebuild the SPA bundle (`cd web; npm install; npm run build`) so
+  `web/dist/` matches the new types.
+- Run files written by 1.2.x remain readable; no migration required.
+
+### Added
+- **Dashboard: storage statistics and pipeline daily activity.** The web
+  SPA's main Dashboard now renders two extra sections sourced from
+  `storage.json` and `pipelines.json`:
+  - *Storage* — stat cards for dedicated-pool data / index space, ADLS
+    used capacity, storage-account count, plus a per-pool table with row
+    counts, data / index / reserved space and `% of max`.
+  - *Pipeline activity (last 7 days)* — stat cards for daily run rate,
+    success rate, daily data movement and the sampling window, plus a
+    top-10 table with per-pipeline runs / day, success / failure breakdown,
+    average data moved per run, total data moved and last run
+    timestamp / status. Daily rates are derived from the 7-day rolling
+    window (`run_count / 7`). Both sections render only when the
+    underlying JSON is present, so deployments without those modules see
+    the original Dashboard unchanged.
+- **`quickstart.ps1` now bootstraps a fully working environment.** All
+  optional pip extras (`dev`, `cost`, `web`) are installed unconditionally,
+  the React SPA in `web/` is built by default (`npm install` + `npm run
+  build`), and on a successful `sma doctor --offline` the script
+  auto-launches `sma serve --with-api --static-dir web\dist` so the
+  control plane is reachable in the browser at the end of bootstrap.
+  Three new switches opt out: `-SkipDoctor`, `-SkipWebBuild`, `-NoServe`.
+- **Web control plane (opt-in).** New `sma serve --with-api` boots a local
+  FastAPI backend mounted at `/api/*` plus a SPA with four new pages:
+  Configuration (read/write `.env`), Run (start an analyzer run with a
+  module checklist), Runs (history), Diff (compare any two runs). The
+  loopback-only HTTP server has no authentication; pass
+  `--i-know-this-is-not-auth` to bind a non-loopback host. Live progress
+  uses Server-Sent Events at `GET /api/runs/<id>/events`. Install via
+  `pip install -e '.[web]'`. Static "deliverable" mode (the existing
+  `sma serve` without `--with-api`) is unchanged.
+
+### Fixed
+- **SPA routing: deep links and tab navigation no longer 404 / blank.**
+  `_SafeStaticFiles` now serves `index.html` for unknown non-asset paths
+  so React Router's client-side routes survive a hard reload, and the
+  selected run id is mirrored into `sessionStorage` (in addition to the
+  URL hash) so navigating between tabs after picking a run keeps the
+  module pages populated.
+- **`GET /api/runs/<a>/diff/<b>` returned HTTP 500.** The endpoint
+  attempted to JSON-encode `RunManifestEntry` dataclasses directly. The
+  response now goes through `dataclasses.asdict` with ISO datetime
+  serialization so the Diff page renders as expected.
+- **Pipelines run-history collection: latency and partial-failure
+  resilience.** Per-pipeline run / activity-run queries are batched and
+  short-circuited when the workspace returns empty windows, and a single
+  pipeline that errors no longer aborts the entire history pull —
+  the failure is captured in the report's `errors[]` and other
+  pipelines continue to be sampled.
+
+### Fixed
+- **Dedicated SQL pool storage reported `0 tables / 0 rows` and table
+  sizes / row counts were missing from `tables.csv`.** Both the
+  `storage` module's `pool_size.sql` and the `dedicated_pools`
+  module's `tables.sql` joined `sys.dm_pdw_nodes_db_partition_stats`
+  to `sys.tables` directly on `object_id`. In Synapse Dedicated SQL
+  Pool the DMV's `object_id` is the *node-local* physical table id,
+  not the user-database `sys.tables.object_id`, so the join collapsed
+  to zero matches and the analyzer reported empty storage / row
+  counts even on full pools. Both queries now route through
+  `sys.pdw_nodes_tables` -> `sys.pdw_table_mappings` -> `sys.tables`,
+  the documented mapping path. Verified end-to-end against
+  `testpool001` (6 user tables, 9.4M rows, 6.28 GB reserved).
+
+### Documentation
+- **`VIEW DEFINITION` is now called out as a required SQL grant** on
+  dedicated pools (and serverless) in [README.md](README.md) and
+  [QUICKSTART.md](QUICKSTART.md). Without it, Synapse silently filters
+  procedures and user-defined functions out of `sys.objects` /
+  `sys.sql_modules` for the analyzer's principal, producing
+  views-only `code_objects` reports. Added a troubleshooting row
+  ("`code_objects` contains only views") that points to the missing
+  grant.
+
+### Fixed
+- **`code_objects` only contained views, not procedures or functions.**
+  The dedicated_pools `code_objects.sql` query drove from
+  `sys.sql_modules` with an INNER JOIN, which silently dropped any
+  procedure or function whose module body was unavailable (encrypted
+  definition, restricted permission, or Synapse catalog edge cases),
+  collapsing the inventory to "views only" in some tenants. The query
+  now drives FROM `sys.objects` and LEFT JOINs `sys.sql_modules`, so
+  procedures and functions are surfaced even when their body is hidden.
+  `definition_length` becomes `NULL` instead of erroring when the body
+  is missing. The `o.type` filter is RTRIM-ed for safety. Added a
+  per-type INFO log line in the collector so a future regression is
+  visible at runtime, plus a regression test pinning the join shape and
+  verifying mixed P / V / FN / IF object types flow through.
+
+### Added
+- **`sma serve` CLI command.** Thin wrapper around `http.server` so
+  analysts can browse `output_dir` (HTML reports + the optional `webui/`
+  SPA) without running `python -m http.server` manually. Loopback-only
+  by default (`--host 0.0.0.0` to expose), opens the browser at
+  `webui/index.html` when present and falls back to the analyzer's
+  `index.html` otherwise. Read-only.
+- **Index banner for the web SPA.** When `webui/index.html` is present
+  in the output directory, the analyzer-emitted `index.html` now
+  renders an "Open web UI" banner above the per-module cards, so the
+  static deliverable points analysts at the interactive view without
+  hiding the per-module HTML reports they may still need.
+- **Vitest smoke test for the SPA.** New `web/src/__tests__/fixtures.smoke.test.ts`
+  loads committed fixtures under `tests/fixtures/web/` and asserts the
+  documented top-level fields exist with the right primitive types.
+  Closes the Phase 2 DoD item in `web/PLAN.md`.
+- **GitHub Actions CI workflow.** New `.github/workflows/ci.yml` runs
+  ruff + pytest for Python and `npm install && npm run typecheck && npm test && npm run build`
+  for the web SPA, uploading `web/dist/` as a workflow artefact.
+- **`sma export-schema` CLI command.** Emits the Pydantic JSON Schema
+  for each module's top-level model (one `<module>.schema.json` per
+  module, plus `x-sma-version` / `x-sma-module` stamps) into
+  `./schemas/` (or `--out-dir <path>`). Lets the React SPA in `web/`
+  regenerate `web/src/types.ts` via `json-schema-to-typescript` /
+  `quicktype` instead of hand-maintaining the type contract. The
+  command needs no Azure credentials.
+- **`sma analyze-all --with-webui` flag.** After a successful run,
+  copies the prebuilt static SPA from `web/dist/` (override with
+  `--webui-dist <path>`) into `<output_dir>/webui/`, alongside copies
+  of the analyzer's JSON outputs so the SPA can `fetch("./<module>.json")`
+  out of the box. Missing `web/dist/` is a non-fatal warning. Closes
+  the Phase 2 item tracked in `web/PLAN.md`.
+
+### Changed
+- **`analyze-all --with-webui` runs the SPA copy before rebuilding the
+  index.** This ensures the analyzer's `index.html` picks up the SPA
+  banner on the same run that installs the SPA.
+
+### Changed
+- **Web SPA dev mode simplified.** Vite now serves `$SMA_DATA_DIR`
+  (default `../output`) as its `publicDir` during `npm run dev`, so the
+  same `fetch("./fabric_mapping.json")` works in dev and prod. The
+  unused `/data/*` proxy was removed. The loader now warns on missing
+  modules instead of swallowing errors silently and caches each
+  module's promise in memory so navigation between pages doesn't
+  re-fetch JSON.
+
+## [1.2.1] - 2026-05-01
+
+### Added
+- **SQL-plane analysis for stored procedures and functions.** The
+  `dedicated_pools` collector now captures per-object metadata (create/modify
+  date, line count, definition length, ANSI-NULLS / quoted-identifier flags)
+  plus a parameter signature list (`sys.parameters`) for every procedure and
+  function. Each `CodeObject` is classified as **`compatible`** /
+  **`needs_review`** / **`incompatible`** based on its T-SQL surface gaps
+  (blocker -> incompatible, warning -> needs_review, otherwise compatible),
+  and a per-pool `code_object_summary` rolls counts up by object type and
+  compatibility. The dedicated-pool markdown + HTML reports gain a
+  "Code objects (SQL plane)" section with object-type breakdown,
+  compatibility pills, parameter drill-downs, and a rule-rollup table.
+  `fabric_mapping`'s `ReadinessSummary` adds `tsql_compatibility_pct`,
+  `tsql_objects_total`, `tsql_objects_incompatible`, and
+  `tsql_objects_needs_review` so the executive summary now shows
+  "% T-SQL compatible" alongside the readiness score. Test suite grows to
+  **195 tests** (+11 covering the classifier, summary rollup, and
+  fabric_mapping integration).
+
+### Changed
+- **Lint baseline cleaned.** Removed unused imports, collapsed
+  semicolon-separated statements in
+  `dedicated_pools/distribution_advisor.py`, and hoisted the late
+  `pydantic` import in `monitoring/reporting.py` to the top of the file.
+  `ruff check src tests` is now clean.
+- **Docs alignment.** Clarified that the `governance` module performs
+  Purview **detection only** (not lineage extraction), and that
+  `fabric_validation` remains a v0 preview opt-in via
+  `--include fabric_validation`.
+
 ## [1.2.0] - 2026-04-29
 
 ### Summary

@@ -149,43 +149,57 @@ def _score_one(
     if rows > 0 and distinct > 0:
         sel = distinct / rows
         if sel >= 0.95:
-            score += 50; reasons.append(f"selectivity={sel:.2f}")
+            score += 50
+            reasons.append(f"selectivity={sel:.2f}")
         elif sel >= 0.5:
-            score += 30; reasons.append(f"selectivity={sel:.2f}")
+            score += 30
+            reasons.append(f"selectivity={sel:.2f}")
         elif sel >= 0.1:
-            score += 10; reasons.append(f"selectivity={sel:.2f}")
+            score += 10
+            reasons.append(f"selectivity={sel:.2f}")
 
     if name in first_keys:
-        score += 20; reasons.append("leading index key")
+        score += 20
+        reasons.append("leading index key")
     if name in unique_cols:
-        score += 15; reasons.append("unique constraint")
+        score += 15
+        reasons.append("unique constraint")
 
     if not is_nullable:
-        score += 5; reasons.append("NOT NULL")
+        score += 5
+        reasons.append("NOT NULL")
 
     if data_type in _NUMERIC_DATE_TYPES:
-        score += 5; reasons.append(f"type={data_type}")
+        score += 5
+        reasons.append(f"type={data_type}")
 
     if rows > 0 and max_freq > 0:
         skew = max_freq / rows
         if skew < 0.05:
-            score += 10; reasons.append(f"skew={skew:.2%}")
+            score += 10
+            reasons.append(f"skew={skew:.2%}")
 
     # Filter-selectivity heuristic: columns referenced in WHERE / JOIN predicates of
     # the pool's code objects make better hash keys (less shuffle for those queries).
     if filter_hits >= 10:
-        score += 15; reasons.append(f"filter usage hits={filter_hits}")
+        score += 15
+        reasons.append(f"filter usage hits={filter_hits}")
     elif filter_hits >= 3:
-        score += 8; reasons.append(f"filter usage hits={filter_hits}")
+        score += 8
+        reasons.append(f"filter usage hits={filter_hits}")
     elif filter_hits > 0:
-        score += 3; reasons.append(f"filter usage hits={filter_hits}")
+        score += 3
+        reasons.append(f"filter usage hits={filter_hits}")
 
     # Penalties
     if distinct and distinct < 60:
-        score -= 40; reasons.append(f"low cardinality (distinct={distinct})")
+        score -= 40
+        reasons.append(f"low cardinality (distinct={distinct})")
     if rows and nulls / rows > 0.5:
-        score -= 30; reasons.append(f"mostly NULL ({nulls / rows:.0%})")
+        score -= 30
+        reasons.append(f"mostly NULL ({nulls / rows:.0%})")
     if data_type.startswith(("nvarchar", "varchar", "char")) and max_length > 200:
-        score -= 10; reasons.append(f"wide string ({max_length})")
+        score -= 10
+        reasons.append(f"wide string ({max_length})")
 
     return score, reasons

@@ -45,13 +45,31 @@ _MODULES: list[tuple[str, str, str, str]] = [
 _TEMPLATE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <title>Synapse Migration Analyzer &mdash; Index</title>
-<style>{{ css }}</style></head><body>
+<style>{{ css }}
+.spa-banner { background: #eef6ff; border: 1px solid #b6d6ff; border-radius: 6px;
+              padding: 12px 16px; margin: 16px 0; display: flex; align-items: center;
+              justify-content: space-between; gap: 12px; }
+.spa-banner .copy { flex: 1; }
+.spa-banner h3 { margin: 0 0 4px 0; }
+.spa-banner p  { margin: 0; }
+.spa-banner .btn { white-space: nowrap; }
+</style></head><body>
 <h1>Synapse Migration Analyzer &mdash; Reports</h1>
 <div class="meta">
  <div><strong>Output directory:</strong> <code>{{ out_dir }}</code></div>
  <div><strong>Generated:</strong> {{ generated_at }}</div>
  <div><strong>Available reports:</strong> {{ available_count }} of {{ total }}</div>
 </div>
+
+{% if spa_present %}
+<div class="spa-banner">
+ <div class="copy">
+  <h3>Interactive web UI available</h3>
+  <p>The static SPA is installed in <code>./webui/</code>. It cross-links readiness, code-objects, recommendations, runbook, and run-delta into one filterable view.</p>
+ </div>
+ <a class="btn" href="webui/index.html">Open web UI &rarr;</a>
+</div>
+{% endif %}
 
 <h2>Modules</h2>
 <div class="card-grid">
@@ -120,6 +138,7 @@ def write_index(out_dir: Path) -> Path:
         modules=rows,
         available_count=available,
         total=len(_MODULES),
+        spa_present=(out_dir / "webui" / "index.html").exists(),
     )
     path = out_dir / "index.html"
     path.write_text(html, encoding="utf-8")

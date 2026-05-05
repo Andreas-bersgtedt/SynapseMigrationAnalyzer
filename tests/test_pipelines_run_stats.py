@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from synapse_migration_analyzer.modules.pipelines import run_stats
 from synapse_migration_analyzer.modules.pipelines.run_stats import (
     DATA_MOVEMENT_ACTIVITY_TYPES,
     aggregate_runs,

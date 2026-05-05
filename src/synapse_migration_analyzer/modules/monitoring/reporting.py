@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterable
 
+from pydantic import BaseModel
+
 from ...reporting.generic import write_csv_rows, write_json_model, write_markdown
 from .html_report import write_html
 from .models import MonitoringAnalysis
@@ -78,9 +80,6 @@ def _fmt(value: float | None) -> str:
 
 
 # Local Pydantic-shaped row for write_csv_rows (which expects BaseModel instances).
-from pydantic import BaseModel
-
-
 class _SummaryRow(BaseModel):
     resource_name: str
     metric_name: str

@@ -41,6 +41,23 @@ def write_reports(result: FabricMappingReport, out_dir: Path, formats: Iterable[
             counts = ", ".join(f"{k}={v}" for k, v in sorted(s.counts.items())) or "-"
             lines.append(f"| {s.module} | `{s.source_file}` | {counts} |")
         lines.append("")
+        # Readiness + T-SQL surface compatibility (executive summary).
+        if result.readiness is not None:
+            rd = result.readiness
+            lines.append("## Readiness")
+            lines.append("")
+            lines.append(f"- **Score:** {rd.score}/100 (`{rd.bucket}`)")
+            counts_str = ", ".join(f"{k}={v}" for k, v in sorted(rd.counts.items())) or "-"
+            lines.append(f"- **Recommendation counts:** {counts_str}")
+            if rd.tsql_objects_total:
+                pct = rd.tsql_compatibility_pct
+                lines.append(
+                    f"- **T-SQL compatibility:** {pct}% "
+                    f"({rd.tsql_objects_total} objects: "
+                    f"{rd.tsql_objects_incompatible} incompatible, "
+                    f"{rd.tsql_objects_needs_review} needs review)"
+                )
+            lines.append("")
         if result.recommendations:
             lines.append("## Recommendations")
             lines.append("")

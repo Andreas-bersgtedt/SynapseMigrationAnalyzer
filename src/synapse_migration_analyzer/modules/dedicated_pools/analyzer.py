@@ -93,9 +93,16 @@ class DedicatedPoolsAnalyzer:
                 log.warning("Distribution advisor failed for pool %s: %s", inventory.name, exc)
                 analysis.errors.append(f"distribution_advisor: {exc}")
 
-            # T-SQL surface gap rollup — link each finding to its code object id.
+            # T-SQL surface gap rollup -- link each finding to its code object id,
+            # then stamp per-object compatibility + build the per-pool summary.
             try:
                 analysis.tsql_surface_gaps = tsql_surface_gap.build_gaps(analysis.code_objects)
+                tsql_surface_gap.stamp_compatibility(
+                    analysis.code_objects, analysis.tsql_surface_gaps,
+                )
+                analysis.code_object_summary = tsql_surface_gap.summarize_code_objects(
+                    analysis.code_objects,
+                )
             except Exception as exc:  # noqa: BLE001
                 log.warning("T-SQL surface gap rollup failed for pool %s: %s", inventory.name, exc)
                 analysis.errors.append(f"tsql_surface_gap: {exc}")

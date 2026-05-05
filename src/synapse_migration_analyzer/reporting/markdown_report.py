@@ -7,7 +7,7 @@ from ..modules.dedicated_pools.models import WorkspaceAnalysis
 
 def write_markdown(result: WorkspaceAnalysis, out_dir: Path) -> Path:
     lines: list[str] = []
-    lines.append(f"# Synapse Migration Analyzer - Dedicated SQL Pools")
+    lines.append("# Synapse Migration Analyzer - Dedicated SQL Pools")
     lines.append("")
     lines.append(f"- **Workspace:** `{result.workspace_name}`")
     lines.append(f"- **Subscription:** `{result.subscription_id}`")
@@ -51,7 +51,7 @@ def write_markdown(result: WorkspaceAnalysis, out_dir: Path) -> Path:
                 )
 
         lines.append("")
-        lines.append(f"### Usage")
+        lines.append("### Usage")
         if pool.usage:
             lines.append("| Metric | Value | Unit |")
             lines.append("|---|---|---|")
@@ -78,6 +78,64 @@ def write_markdown(result: WorkspaceAnalysis, out_dir: Path) -> Path:
             for sp in pool.security:
                 lines.append(f"| {sp.name} | {sp.type} | {', '.join(sp.role_memberships)} |")
         lines.append("")
+
+        # ----- SQL-plane inventory (stored procedures, functions, views) -----
+        if pool.code_objects:
+            sumr = pool.code_object_summary
+            lines.append(f"### Code objects (SQL plane) ({len(pool.code_objects)})")
+            lines.append("")
+            if sumr:
+                pct = "" if sumr.compatibility_pct is None else f" | Fabric-compatible: {sumr.compatibility_pct}%"
+                by_type = ", ".join(f"{k}={v}" for k, v in sorted(sumr.by_type.items())) or "-"
+                by_compat = ", ".join(
+                    f"{k}={v}" for k, v in sorted(sumr.by_compatibility.items())
+                ) or "-"
+                lines.append(f"- **By type:** {by_type}")
+                lines.append(f"- **By Fabric compatibility:** {by_compat}{pct}")
+                lines.append("")
+            # Top 20 objects ranked by gap_count desc, then by name.
+            ranked = sorted(
+                pool.code_objects,
+                key=lambda o: (-(o.gap_count or 0), o.schema_name or "", o.object_name or ""),
+            )[:20]
+            lines.append(
+                "| Schema | Object | Type | Compatibility | Lines | Params | Gaps |"
+            )
+            lines.append("|---|---|---|---|---:|---:|---:|")
+            for o in ranked:
+                lines.append(
+                    f"| {o.schema_name} | {o.object_name} | {o.object_type} | "
+                    f"{o.compatibility} | {o.line_count if o.line_count is not None else ''} | "
+                    f"{o.parameter_count} | {o.gap_count} |"
+                )
+            lines.append("")
+
+            # T-SQL surface rule rollup mirrors the HTML view -- one row per rule.
+            if pool.tsql_surface_gaps:
+                rule_agg: dict[str, dict] = {}
+                for g in pool.tsql_surface_gaps:
+                    rb = rule_agg.setdefault(g.rule_id, {
+                        "label": g.label, "severity": g.severity,
+                        "fabric_action": g.fabric_action,
+                        "findings": 0, "objects": set(),
+                    })
+                    rb["findings"] += 1
+                    rb["objects"].add(g.code_object_id)
+                sev_order = {"blocker": 0, "warning": 1, "info": 2}
+                lines.append("#### T-SQL surface gaps -- rule rollup")
+                lines.append("")
+                lines.append("| Rule | Severity | Findings | Objects | Fabric action |")
+                lines.append("|---|---|---:|---:|---|")
+                for rid, rb in sorted(
+                    rule_agg.items(),
+                    key=lambda kv: (sev_order.get(kv[1]["severity"], 3), -kv[1]["findings"]),
+                ):
+                    lines.append(
+                        f"| {rb['label']} (`{rid}`) | {rb['severity']} | "
+                        f"{rb['findings']} | {len(rb['objects'])} | "
+                        f"{rb['fabric_action'] or ''} |"
+                    )
+                lines.append("")
 
     path = out_dir / "dedicated_pools.md"
     path.write_text("\n".join(lines), encoding="utf-8")

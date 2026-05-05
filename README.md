@@ -13,6 +13,8 @@ Python tooling that inventories and analyzes **Azure Synapse Analytics** workspa
 
 📘 **New here?** See the module-based [QUICKSTART.md](QUICKSTART.md).
 
+💻 **Want a browser UI?** `sma serve --with-api` boots a local FastAPI control plane plus a SPA so analysts can edit `.env`, kick off runs, watch live progress, and compare runs without touching the CLI. See [Web control plane (opt-in)](#web-control-plane-opt-in) below.
+
 ## Architecture
 
 ```
@@ -51,9 +53,22 @@ A new CLI subcommand is registered in [cli.py](src/synapse_migration_analyzer/cl
   - **Synapse Artifact User** on the workspace for `analyze-pipelines` and `analyze-spark-pools` (notebooks / SJDs).
   - **Monitoring Reader** at the subscription / resource-group scope for `analyze-monitoring` and `analyze-storage` (capacity metrics).
   - For `analyze-storage`: `Reader` on each storage account (or on the subscription / RG that contains it). The workspace's default ADLS Gen2 is auto-detected.
-  - **Synapse SQL access** to each dedicated pool (granted via `CREATE USER [<sp>] FROM EXTERNAL PROVIDER` in the pool, plus role memberships such as `db_datareader` and access to DMVs / `VIEW DATABASE STATE`).
+  - **Synapse SQL access** to each dedicated pool (granted via `CREATE USER [<sp>] FROM EXTERNAL PROVIDER` in the pool, plus role memberships such as `db_datareader`, `VIEW DATABASE STATE` for DMVs, and `VIEW DEFINITION` so the catalog exposes stored procedures and user-defined functions in `sys.objects` / `sys.sql_modules`).
 
 ## Setup
+
+Quickstart bootstrapper (Windows):
+
+```powershell
+# Clones the repo, creates .venv, installs all extras (dev,cost,web),
+# builds the React SPA, runs `sma doctor --offline`, and on success
+# launches `sma serve --with-api --static-dir web\dist`.
+.\quickstart.ps1                       # public fork
+.\quickstart.ps1 -Repo Private         # internal fork
+.\quickstart.ps1 -SkipWebBuild -NoServe  # CLI-only setup
+```
+
+Manual setup:
 
 ```powershell
 python -m venv .venv
@@ -81,12 +96,20 @@ sma map-to-fabric                                 # aggregates prior outputs
 sma analyze-all                                   # runs everything end-to-end (7 steps)
 sma analyze-all --skip monitoring --skip storage  # opt out of selected modules
 sma analyze-all --include governance --include security --include cost  # opt in to mid-term modules
+sma analyze-all --with-webui                      # also copy the prebuilt React SPA into output/webui/
 sma -v analyze-dedicated-pools                    # verbose
 
 # Mid-term modules (opt-in; emit JSON / CSV / Markdown / HTML)
 sma analyze-governance                            # RBAC + MPE + CMK + Purview, with findings
 sma analyze-security                              # firewall + AAD + TDE + credentials, with findings
 sma analyze-cost --months 6                       # consumption + Fabric TCO delta, with findings
+
+# Tooling for the web SPA / FastAPI control plane
+sma export-schema                                 # emit per-module Pydantic JSON Schema to ./schemas/
+
+# Web control plane (opt-in; see section below)
+pip install -e ".[web]"                           # install FastAPI + uvicorn + sse-starlette + httpx
+sma serve --with-api                              # local browser UI at http://127.0.0.1:8000/
 ```
 
 Outputs land in `./output/` (override via `SMA_OUTPUT_DIR`). Every analyzer emits JSON, CSV,
@@ -97,9 +120,43 @@ Markdown and HTML. After `analyze-all` (or via `sma index`) a top-level `index.h
 ## Tests
 
 ```powershell
-pytest -q          # 184 unit tests, no Azure access required
+pytest -q          # full suite (incl. tests/web/), no Azure access required
 sma doctor         # host + auth pre-flight (uses .env when present)
 ```
+
+## Web control plane (opt-in)
+
+`sma serve --with-api` starts a local FastAPI backend (mounted at `/api/*`) and
+the React SPA on the same origin. Analysts can:
+
+- Edit `.env` from the browser (Configuration page) — secret values are
+  write-only; reads return only `set` / `unset`.
+- Kick off analyzer runs (Run page) with a module checklist and watch live
+  progress over Server-Sent Events.
+- Browse run history (Runs page) and diff any two runs (Diff page).
+- See workspace-level vitals on the **Dashboard**: readiness score, T-SQL
+  surface findings, recommendation count, SKU advisory, top blockers,
+  storage stats (dedicated-pool data / index sizes, ADLS used capacity
+  per account, per-pool table breakdown) and pipeline activity over the
+  last 7 days (daily run rate, success rate, daily data movement,
+  top-10 pipelines by run count).
+
+```powershell
+pip install -e ".[web]"                          # FastAPI + uvicorn + sse-starlette + httpx
+cd web; npm install; npm run build; cd ..       # build the SPA bundle
+
+sma serve --with-api                             # http://127.0.0.1:8000/
+sma serve --with-api --port 8001                 # custom port
+sma serve --with-api --runs-dir D:\runs          # custom run repo
+```
+
+**Security:** the API has **no authentication**. It is bound to loopback
+(`127.0.0.1`) by default and refuses non-loopback hosts unless you pass
+`--i-know-this-is-not-auth`. State-changing requests (`POST` / `PUT` /
+`DELETE`) require the `X-SMA-API: 1` header (the SPA sets it; CSRF mitigation).
+Run directories live under `--runs-dir` (default `./runs`) and run / module
+identifiers are validated against strict regexes to prevent path traversal.
+Do not expose the control plane on a shared host.
 
 ## What the dedicated_pools module captures
 
@@ -180,8 +237,10 @@ New modules and integrations once the core depth is in place.
 
 - **`governance` module** — workspace- and resource-level RBAC export (control plane +
   data plane) with role-name resolution, managed-private-endpoint inventory,
-  customer-managed-key configuration, and **Microsoft Purview** lineage capture
-  for the analyzed workspace. **(v1: rules + HTML report)**
+  customer-managed-key configuration, and **Microsoft Purview** account
+  configuration detection (presence / absence of a linked Purview account on
+  the workspace — full lineage extraction is on the long-term roadmap).
+  **(v1: rules + HTML report)**
 - **`security` module** — firewall rules, AAD-only enforcement, TLS minimum version,
   encryption-at-rest configuration, AAD admin inventory, per-pool TDE state,
   and a linked-service credential inventory with **inline-secret detection**
@@ -224,10 +283,14 @@ Ideas that need design work or external dependencies.
 - **Performing the migration itself.** This tool inventories and assesses; data movement
   and DDL/DML translation remain out of scope.
 - **Modifying the source workspace.** All Azure access is read-only by design (Reader,
-  Monitoring Reader, Synapse Artifact User, plus `db_datareader` + `VIEW DATABASE STATE`
+  Monitoring Reader, Synapse Artifact User, plus `db_datareader` + `VIEW DATABASE STATE` + `VIEW DEFINITION`
   on dedicated pools).
-- **A GUI.** The CLI + generated HTML / Markdown / CSV / JSON reports are the surface;
-  any UI work would live in a separate project.
+- **A multi-tenant hosted GUI.** A local browser UI ships as the opt-in
+  [web control plane](#web-control-plane-opt-in) (`sma serve --with-api`,
+  loopback-only, no authentication), and the static deliverable mode
+  (`sma serve`) renders the same SPA against an `output/` directory. A
+  multi-tenant hosted service with authentication / authorization remains
+  out of scope.
 
 Have a request or want to contribute? Open an issue on the
 [GitHub repository](https://github.com/anbergst_microsoft/SynapseMigrationAnalyzer/issues)

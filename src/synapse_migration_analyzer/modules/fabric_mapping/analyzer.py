@@ -91,6 +91,36 @@ class FabricMappingAnalyzer:
         except Exception as exc:  # noqa: BLE001
             log.warning("readiness scoring failed: %s", exc)
 
+        # v2 — T-SQL surface compatibility rollup across all dedicated pools.
+        # The dedicated_pools module already classifies each code object as
+        # compatible / needs_review / incompatible; here we sum across pools
+        # so the executive summary can show "% T-SQL compatible".
+        try:
+            dp = loaded.get("dedicated_pools") or {}
+            total = 0
+            compatible = 0
+            incompatible = 0
+            needs_review = 0
+            for pool in dp.get("pools") or []:
+                for obj in pool.get("code_objects") or []:
+                    total += 1
+                    compat = obj.get("compatibility") or "compatible"
+                    if compat == "compatible":
+                        compatible += 1
+                    elif compat == "needs_review":
+                        needs_review += 1
+                    elif compat == "incompatible":
+                        incompatible += 1
+            if total and report.readiness is not None:
+                report.readiness.tsql_compatibility_pct = round(
+                    compatible / total * 100, 1,
+                )
+                report.readiness.tsql_objects_total = total
+                report.readiness.tsql_objects_incompatible = incompatible
+                report.readiness.tsql_objects_needs_review = needs_review
+        except Exception as exc:  # noqa: BLE001
+            log.warning("T-SQL compatibility rollup failed: %s", exc)
+
         # v2 — sequenced migration runbook.
         try:
             steps = runbook.build_runbook(report.recommendations)

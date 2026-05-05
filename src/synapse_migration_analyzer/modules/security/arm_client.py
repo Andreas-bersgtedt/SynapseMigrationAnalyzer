@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Iterable
+from typing import Any, Iterable
 
+from ...auth import get_credential
 from ...config import AzureConfig
 from .models import CredentialEntry, FirewallRule, PoolTdeStatus, WorkspaceSecuritySettings
 
@@ -21,26 +22,47 @@ def _live_disabled() -> bool:
 
 
 class SecurityArmClient:
+    """ARM-plane collectors for security findings.
+
+    The Synapse management client is cached lazily so the collectors don't
+    pay the credential / client construction cost on every method call. The
+    cached client is keyed only by ``self`` (the per-run config), so reuse
+    across runs is intentionally NOT done.
+    """
+
     def __init__(self, cfg: AzureConfig) -> None:
         self._cfg = cfg
+        self._mgmt_client: Any = None  # SynapseManagementClient | None
+
+    # ------------------------------------------------------------------
+    # Lazy client cache
+    # ------------------------------------------------------------------
+
+    def _management_client(self) -> Any | None:
+        """Return a cached ``SynapseManagementClient`` or ``None`` if SDK missing."""
+        if self._mgmt_client is not None:
+            return self._mgmt_client
+        try:  # pragma: no cover - exercised only when azure-mgmt-synapse is present
+            from azure.mgmt.synapse import SynapseManagementClient
+        except ImportError:
+            return None
+        try:
+            cred = get_credential(self._cfg)
+        except Exception as exc:  # noqa: BLE001 - credential errors are best-effort here
+            log.warning("could not build credential for security collectors: %s", exc)
+            return None
+        self._mgmt_client = SynapseManagementClient(cred, self._cfg.subscription_id)
+        return self._mgmt_client
 
     def fetch_workspace_settings(self) -> WorkspaceSecuritySettings | None:
         if _live_disabled():
             return None
-        try:  # pragma: no cover
-            from azure.identity import ClientSecretCredential
-            from azure.mgmt.synapse import SynapseManagementClient
-        except ImportError:
+        client = self._management_client()
+        if client is None:
             return None
-        cred = ClientSecretCredential(
-            tenant_id=self._cfg.tenant_id,
-            client_id=self._cfg.client_id,
-            client_secret=self._cfg.client_secret,
-        )
-        client = SynapseManagementClient(cred, self._cfg.subscription_id)
         try:
             ws = client.workspaces.get(self._cfg.resource_group, self._cfg.workspace_name)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - SDK can raise AzureError or HttpResponseError
             log.warning("workspaces.get failed: %s", exc)
             return None
         encryption_kind = None
@@ -63,17 +85,9 @@ class SecurityArmClient:
     def list_firewall_rules(self) -> list[FirewallRule]:
         if _live_disabled():
             return []
-        try:  # pragma: no cover
-            from azure.identity import ClientSecretCredential
-            from azure.mgmt.synapse import SynapseManagementClient
-        except ImportError:
+        client = self._management_client()
+        if client is None:
             return []
-        cred = ClientSecretCredential(
-            tenant_id=self._cfg.tenant_id,
-            client_id=self._cfg.client_id,
-            client_secret=self._cfg.client_secret,
-        )
-        client = SynapseManagementClient(cred, self._cfg.subscription_id)
         rules: list[FirewallRule] = []
         try:
             ws_id = (
@@ -115,17 +129,9 @@ class SecurityArmClient:
         """Return Transparent Data Encryption state for each dedicated SQL pool."""
         if _live_disabled():
             return []
-        try:  # pragma: no cover
-            from azure.identity import ClientSecretCredential
-            from azure.mgmt.synapse import SynapseManagementClient
-        except ImportError:
+        client = self._management_client()
+        if client is None:
             return []
-        cred = ClientSecretCredential(
-            tenant_id=self._cfg.tenant_id,
-            client_id=self._cfg.client_id,
-            client_secret=self._cfg.client_secret,
-        )
-        client = SynapseManagementClient(cred, self._cfg.subscription_id)
         out: list[PoolTdeStatus] = []
         try:
             pools = list(client.sql_pools.list_by_workspace(
@@ -159,17 +165,9 @@ class SecurityArmClient:
         """Return Azure AD admin display names / object ids configured for the workspace."""
         if _live_disabled():
             return []
-        try:  # pragma: no cover
-            from azure.identity import ClientSecretCredential
-            from azure.mgmt.synapse import SynapseManagementClient
-        except ImportError:
+        client = self._management_client()
+        if client is None:
             return []
-        cred = ClientSecretCredential(
-            tenant_id=self._cfg.tenant_id,
-            client_id=self._cfg.client_id,
-            client_secret=self._cfg.client_secret,
-        )
-        client = SynapseManagementClient(cred, self._cfg.subscription_id)
         out: list[str] = []
         for getter in ("workspace_aad_admins", "workspace_sql_aad_admins"):
             ops = getattr(client, getter, None)
@@ -204,14 +202,13 @@ class SecurityArmClient:
             return []
         try:  # pragma: no cover
             from azure.synapse.artifacts import ArtifactsClient
-            from azure.identity import ClientSecretCredential
         except ImportError:
             return []
-        cred = ClientSecretCredential(
-            tenant_id=self._cfg.tenant_id,
-            client_id=self._cfg.client_id,
-            client_secret=self._cfg.client_secret,
-        )
+        try:
+            cred = get_credential(self._cfg)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("could not build credential for artifacts client: %s", exc)
+            return []
         endpoint = f"https://{self._cfg.workspace_name}.dev.azuresynapse.net"
         client = ArtifactsClient(endpoint=endpoint, credential=cred)
         out: list[dict] = []

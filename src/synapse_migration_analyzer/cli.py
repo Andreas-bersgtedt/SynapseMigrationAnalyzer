@@ -51,7 +51,6 @@ console = Console()
 log = logging.getLogger("sma")
 
 _ALL_FORMATS = ("json", "csv", "markdown", "html")
-_FLAT_FORMATS = ("json", "csv", "markdown")  # back-compat alias; all modules now also support html
 
 # Deterministic exit codes for CI consumers.
 EXIT_OK = 0
@@ -104,13 +103,18 @@ def cli(ctx: click.Context, verbose: bool, env_file: Path | None, log_format: st
     """Synapse Migration Analyzer."""
     _configure_logging(verbose, log_format)
     ctx.ensure_object(dict)
-    # Skip config loading when the user is just asking for help — `sma <cmd> --help`
-    # should work without a populated .env so newcomers can discover commands.
-    if any(arg in ("--help", "-h") for arg in sys.argv[1:]):
+    # Subcommands that do not need a populated .env. ``doctor`` *checks* the
+    # config; ``export-schema`` is pure model introspection; ``serve`` (without
+    # ``--with-api``) is a static-file webserver wrapper. ``invoked_subcommand``
+    # is Click's own cleaned-up view of the dispatch target, so the detection
+    # works regardless of whether the user supplied ``-v`` / ``--env-file``
+    # before the subcommand name.
+    _NO_CONFIG_SUBCOMMANDS = {"doctor", "export-schema", "serve"}
+    if ctx.invoked_subcommand in _NO_CONFIG_SUBCOMMANDS or ctx.invoked_subcommand is None:
         ctx.obj["config"] = None
         return
-    # `sma doctor` runs without a populated config — it *checks* the config.
-    if len(sys.argv) >= 2 and sys.argv[1] == "doctor":
+    # Asking for help on any subcommand should not require a .env either.
+    if any(a in ("--help", "-h") for a in sys.argv[1:]):
         ctx.obj["config"] = None
         return
     try:
@@ -327,8 +331,21 @@ def validate_fabric(ctx: click.Context, formats: tuple[str, ...]) -> None:
                                 case_sensitive=False),
               help="Opt in to a mid-term scaffolding module (repeatable). "
                    "Example: --include governance --include security")
+@click.option("--with-webui", "with_webui", is_flag=True, default=False,
+              help="After the run, copy the prebuilt static SPA from web/dist/ into the "
+                   "output directory so analysts get a one-folder deliverable. "
+                   "Requires `cd web && npm install && npm run build` beforehand.")
+@click.option("--webui-dist", "webui_dist", type=click.Path(file_okay=False, path_type=Path),
+              default=None,
+              help="Override the location of the prebuilt SPA (default: <repo>/web/dist).")
 @click.pass_context
-def analyze_all(ctx: click.Context, skip: tuple[str, ...], include: tuple[str, ...]) -> None:
+def analyze_all(
+    ctx: click.Context,
+    skip: tuple[str, ...],
+    include: tuple[str, ...],
+    with_webui: bool,
+    webui_dist: Path | None,
+) -> None:
     """Run every analyzer (dedicated, serverless, spark, pipelines, monitoring, storage) then map-to-fabric."""
     cfg = ctx.obj["config"]
     skipped = {s.lower() for s in skip}
@@ -377,6 +394,18 @@ def analyze_all(ctx: click.Context, skip: tuple[str, ...], include: tuple[str, .
     _step("[+] fabric_validation", "fabric_validation", lambda: write_fabric_validation_reports(
         FabricValidationAnalyzer(cfg).run(), cfg.output_dir, formats=["json", "csv", "markdown"]))
 
+    # Optionally drop the prebuilt static SPA into output_dir BEFORE we (re)build
+    # the index, so the index can render an "Open web UI" banner when the SPA
+    # is present. Best-effort: a missing `web/dist/` is a warning, not a failure
+    # (the SPA build is optional).
+    if with_webui:
+        try:
+            copied = _copy_webui(cfg.output_dir, webui_dist)
+            all_paths.append(copied)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("--with-webui copy failed (continuing): %s", exc)
+            partial_failure = True
+
     # Always (re)build the index so users land on a single navigable page.
     try:
         all_paths.append(write_index(cfg.output_dir))
@@ -418,6 +447,42 @@ def analyze_all(ctx: click.Context, skip: tuple[str, ...], include: tuple[str, .
     _print_paths(all_paths)
     if partial_failure:
         sys.exit(EXIT_PARTIAL_FAILURES)
+
+
+def _copy_webui(output_dir: Path, webui_dist: Path | None) -> Path:
+    """Copy the prebuilt SPA bundle into ``output_dir/webui/``.
+
+    The SPA fetches JSON via relative paths (``./fabric_mapping.json``), so
+    we install it into a sibling subdirectory and emit a small redirect
+    page in case the analyzer's own ``index.html`` is also present. The
+    SPA itself is loaded from ``output_dir/webui/index.html``.
+    """
+    import shutil
+
+    src = webui_dist or (Path(__file__).resolve().parent.parent.parent / "web" / "dist")
+    if not src.is_dir():
+        raise FileNotFoundError(
+            f"Prebuilt SPA not found at {src}. Run `cd web && npm install && npm run build` "
+            "first, or pass --webui-dist <path>."
+        )
+    dest = output_dir / "webui"
+    if dest.exists():
+        shutil.rmtree(dest)
+    # `dirs_exist_ok` is unnecessary because we just removed dest, but stay safe.
+    shutil.copytree(src, dest)
+    # Make the JSON outputs reachable from the SPA via a relative path. The
+    # SPA loader fetches `./fabric_mapping.json` etc., so we copy / hardlink
+    # the JSON files alongside index.html.
+    for json_name in (
+        "fabric_mapping.json", "dedicated_pools.json", "run_delta.json",
+        "serverless_pools.json", "spark_pools.json", "pipelines.json",
+        "monitoring.json", "storage.json",
+        "governance.json", "security.json", "cost.json", "fabric_validation.json",
+    ):
+        candidate = output_dir / json_name
+        if candidate.exists():
+            shutil.copy2(candidate, dest / json_name)
+    return dest
 
 
 def _print_paths(paths: list) -> None:
@@ -466,6 +531,239 @@ def run_delta(ctx: click.Context) -> None:
         write_delta_json(diff, cfg.output_dir, prev_manifest=prev, curr_manifest=curr),
     ]
     _print_paths(paths)
+
+
+# Map of <output filename basename, no extension> -> top-level Pydantic model.
+# Mirrors the JSON files emitted by `analyze-all`. Used by `sma export-schema`
+# (and a future `sma serve` / Option B FastAPI) to publish the schemas the
+# web SPA needs to type-check its loaders against.
+def _schema_registry() -> dict[str, type]:
+    from .modules.cost.models import CostAnalysis
+    from .modules.dedicated_pools.models import WorkspaceAnalysis
+    from .modules.fabric_mapping.models import FabricMappingReport
+    from .modules.fabric_validation.models import FabricValidationAnalysis
+    from .modules.governance.models import GovernanceAnalysis
+    from .modules.monitoring.models import MonitoringAnalysis
+    from .modules.pipelines.models import PipelinesAnalysis
+    from .modules.security.models import SecurityAnalysis
+    from .modules.serverless_pools.models import ServerlessAnalysis
+    from .modules.spark_pools.models import SparkAnalysis
+    from .modules.storage.models import StorageAnalysis
+
+    return {
+        "dedicated_pools": WorkspaceAnalysis,
+        "serverless_pools": ServerlessAnalysis,
+        "spark_pools": SparkAnalysis,
+        "pipelines": PipelinesAnalysis,
+        "monitoring": MonitoringAnalysis,
+        "storage": StorageAnalysis,
+        "fabric_mapping": FabricMappingReport,
+        "governance": GovernanceAnalysis,
+        "security": SecurityAnalysis,
+        "cost": CostAnalysis,
+        "fabric_validation": FabricValidationAnalysis,
+    }
+
+
+@cli.command("export-schema")
+@click.option("--out-dir", "-o", type=click.Path(file_okay=False, path_type=Path),
+              default=None,
+              help="Directory to write per-module JSON Schema files. "
+                   "Defaults to ./schemas/. The directory is created if missing.")
+@click.option("--module", "-m", "modules", multiple=True,
+              help="Restrict to one or more modules (repeatable). "
+                   "Defaults to all modules.")
+@click.pass_context
+def export_schema(ctx: click.Context, out_dir: Path | None, modules: tuple[str, ...]) -> None:
+    """Emit the Pydantic JSON Schema for each module's top-level model.
+
+    Useful for code-generating ``web/src/types.ts`` (run
+    ``json-schema-to-typescript`` or ``quicktype`` over the resulting
+    ``schemas/*.schema.json``) and for publishing schemas from a future
+    Option B FastAPI endpoint. This command needs no Azure access.
+    """
+    registry = _schema_registry()
+    target = out_dir or Path("schemas")
+    target.mkdir(parents=True, exist_ok=True)
+    selected = {m.lower() for m in modules} if modules else set(registry)
+    unknown = selected - set(registry)
+    if unknown:
+        raise click.BadParameter(
+            f"Unknown module(s): {sorted(unknown)}. Known: {sorted(registry)}",
+            param_hint="--module",
+        )
+
+    written: list[Path] = []
+    for name in sorted(selected):
+        model_cls = registry[name]
+        schema = model_cls.model_json_schema()
+        # Stamp the schema with the analyzer version so consumers can detect
+        # drift without parsing CHANGELOG.md.
+        schema["x-sma-version"] = __version__
+        schema["x-sma-module"] = name
+        path = target / f"{name}.schema.json"
+        path.write_text(json.dumps(schema, indent=2, sort_keys=True), encoding="utf-8")
+        written.append(path)
+    _print_paths(written)
+
+
+@cli.command("serve")
+@click.option("--output-dir", "-o", "output_dir",
+              type=click.Path(file_okay=False, exists=True, path_type=Path),
+              default=Path("output"),
+              help="Directory to serve. Defaults to ./output (the analyzer's default "
+                   "output_dir). Must already contain analyzer JSON / HTML output.")
+@click.option("--port", "-p", type=int, default=8000, show_default=True,
+              help="TCP port to bind. Pick a non-privileged port.")
+@click.option("--host", "-H", default="127.0.0.1", show_default=True,
+              help="Bind address. Defaults to loopback so the report is not exposed "
+                   "to the LAN by default. Pass '0.0.0.0' to expose it deliberately.")
+@click.option("--no-browser", "no_browser", is_flag=True, default=False,
+              help="Do not open the default browser at startup.")
+@click.option("--with-api", "with_api", is_flag=True, default=False,
+              help="Boot the FastAPI control plane (Configuration / Run / Runs / "
+                   "Diff endpoints under /api/*) instead of the read-only static "
+                   "server. Requires the [web] extras: pip install -e .[web].")
+@click.option("--runs-dir", "runs_dir",
+              type=click.Path(file_okay=False, path_type=Path),
+              default=Path("runs"),
+              help="Directory used as the run repository when --with-api is set. "
+                   "Each run gets its own subdirectory.")
+@click.option("--env-file", "env_file",
+              type=click.Path(dir_okay=False, path_type=Path),
+              default=Path(".env"),
+              help="Path to the .env file the Configuration page reads/writes "
+                   "when --with-api is set.")
+@click.option("--static-dir", "static_dir",
+              type=click.Path(file_okay=False, path_type=Path),
+              default=None,
+              help="Directory containing the prebuilt SPA bundle (web/dist/). "
+                   "When omitted with --with-api, only /api/* is mounted.")
+@click.option("--i-know-this-is-not-auth", "ack_no_auth", is_flag=True, default=False,
+              help="Acknowledge that --with-api has no auth and you are deliberately "
+                   "binding to a non-loopback host.")
+def serve(
+    output_dir: Path,
+    port: int,
+    host: str,
+    no_browser: bool,
+    with_api: bool,
+    runs_dir: Path,
+    env_file: Path,
+    static_dir: Path | None,
+    ack_no_auth: bool,
+) -> None:
+    """Serve the analyzer output (and optionally the FastAPI control plane).
+
+    Without ``--with-api`` this is a read-only static file server (a
+    thin wrapper around ``python -m http.server``) suitable for the SPA
+    bundled by ``--with-webui``.
+
+    With ``--with-api`` the command boots a FastAPI app that lets analysts
+    drive the analyzer from the browser: edit configuration, kick off
+    runs, watch progress, browse history and diffs. The API has *no
+    auth* and binds to loopback by default; refuse non-loopback unless
+    the operator passes ``--i-know-this-is-not-auth``.
+    """
+    if with_api:
+        return _serve_with_api(
+            host=host, port=port, no_browser=no_browser,
+            runs_dir=runs_dir, env_file=env_file, static_dir=static_dir,
+            ack_no_auth=ack_no_auth,
+        )
+
+    import functools
+    import http.server
+    import socketserver
+    import threading
+    import webbrowser
+
+    output_dir = output_dir.resolve()
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(output_dir))
+    # ThreadingHTTPServer makes Ctrl-C responsive while a request is in flight.
+    server_cls = http.server.ThreadingHTTPServer if hasattr(
+        http.server, "ThreadingHTTPServer"
+    ) else socketserver.TCPServer
+
+    # Prefer the SPA landing page if present, otherwise the analyzer index.
+    landing = "webui/index.html" if (output_dir / "webui" / "index.html").exists() else "index.html"
+    url = f"http://{host}:{port}/{landing}"
+
+    console.rule(f"[bold green]Serving {output_dir}")
+    console.print(f"  URL: [cyan]{url}[/cyan]")
+    console.print(f"  Bind: {host}:{port}  (loopback-only by default; pass --host 0.0.0.0 to expose)")
+    console.print("  Press Ctrl-C to stop.")
+
+    httpd = server_cls((host, port), handler)
+    if not no_browser:
+        # Open the browser slightly after the server starts listening.
+        threading.Timer(0.5, lambda: webbrowser.open(url)).start()
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        console.print("\n[bold]Stopping server.[/bold]")
+    finally:
+        httpd.server_close()
+
+
+def _serve_with_api(
+    *,
+    host: str,
+    port: int,
+    no_browser: bool,
+    runs_dir: Path,
+    env_file: Path,
+    static_dir: Path | None,
+    ack_no_auth: bool,
+) -> None:
+    """Boot the FastAPI control plane via uvicorn."""
+    if host not in ("127.0.0.1", "localhost", "::1") and not ack_no_auth:
+        raise click.UsageError(
+            f"--host {host} is not loopback and --with-api has no authentication. "
+            "Re-run with --i-know-this-is-not-auth if you really want to expose it."
+        )
+    try:
+        import uvicorn
+    except ImportError as exc:  # pragma: no cover - explicit error path
+        raise click.UsageError(
+            "--with-api requires the [web] extras. Install them with: "
+            "pip install -e '.[web]'"
+        ) from exc
+
+    from .web import create_app
+
+    # Auto-discover prebuilt SPA at <repo>/web/dist when not specified.
+    if static_dir is None:
+        candidate = Path(__file__).resolve().parent.parent.parent / "web" / "dist"
+        if candidate.is_dir() and (candidate / "index.html").exists():
+            static_dir = candidate
+
+    app = create_app(
+        runs_dir=runs_dir.resolve(),
+        env_file=env_file.resolve(),
+        static_dir=static_dir.resolve() if static_dir else None,
+    )
+
+    url = f"http://{host}:{port}/"
+    console.rule("[bold green]Synapse Migration Analyzer (control plane)")
+    console.print(f"  URL:       [cyan]{url}[/cyan]")
+    console.print(f"  API docs:  [cyan]{url}api/docs[/cyan]")
+    console.print(f"  Runs dir:  {runs_dir.resolve()}")
+    console.print(f"  Env file:  {env_file.resolve()}")
+    if static_dir is None:
+        console.print("  [yellow]No SPA mounted. Serving /api/* only.[/yellow]")
+        console.print("  Build the SPA with `cd web && npm install && npm run build`.")
+    console.print(f"  Bind:      {host}:{port}  "
+                  "(loopback-only by default; --with-api has NO AUTH)")
+    console.print("  Press Ctrl-C to stop.")
+
+    if not no_browser:
+        import threading
+        import webbrowser
+
+        threading.Timer(0.5, lambda: webbrowser.open(url)).start()
+
+    uvicorn.run(app, host=host, port=port, log_config=None)
 
 
 def main() -> None:

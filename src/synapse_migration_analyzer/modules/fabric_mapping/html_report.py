@@ -36,6 +36,19 @@ _TEMPLATE = """<!doctype html>
  <div class="stat"><div class="label">Warnings</div>
   <div class="value">{% if extras.sev.warning %}<span class="pill warn">{{ extras.sev.warning }}</span>{% else %}0{% endif %}</div></div>
  <div class="stat"><div class="label">Info</div><div class="value">{{ extras.sev.info or 0 }}</div></div>
+{% if rd.tsql_objects_total %}
+ <div class="stat"><div class="label">T-SQL compatible</div>
+  <div class="value">
+   {% set pct = rd.tsql_compatibility_pct %}
+   {% if pct >= 80 %}<span class="pill ok">{{ pct }}%</span>
+   {% elif pct >= 50 %}<span class="pill warn">{{ pct }}%</span>
+   {% else %}<span class="pill err">{{ pct }}%</span>{% endif %}
+  </div>
+  <div class="small muted">{{ rd.tsql_objects_total }} objects &middot;
+   {{ rd.tsql_objects_incompatible }} incompatible &middot;
+   {{ rd.tsql_objects_needs_review }} needs review</div>
+ </div>
+{% endif %}
 </div>
 {% endif %}
 

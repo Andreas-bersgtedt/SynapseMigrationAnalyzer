@@ -306,16 +306,74 @@ _TEMPLATE = """<!doctype html>
 
 {% if pool.code_objects %}
 <details>
- <summary>Code objects ({{ pool.code_objects|length }})</summary>
- <input class="filter" type="text" placeholder="Filter (schema, name, id, type)" oninput="smaFilter(this, 'code-{{ pix }}')"/>
+ <summary>Code objects ({{ pool.code_objects|length }})
+ {% if pool.code_object_summary and pool.code_object_summary.compatibility_pct is not none %}
+ &mdash;
+  {% set pct = pool.code_object_summary.compatibility_pct %}
+  {% if pct >= 80 %}<span class="pill ok">Fabric-compatible: {{ pct }}%</span>
+  {% elif pct >= 50 %}<span class="pill warn">Fabric-compatible: {{ pct }}%</span>
+  {% else %}<span class="pill err">Fabric-compatible: {{ pct }}%</span>{% endif %}
+ {% endif %}
+ </summary>
+ {% if pool.code_object_summary %}
+ {% set sumr = pool.code_object_summary %}
+ <h4>SQL-plane inventory</h4>
+ <table>
+  <tr>
+   <th class="num">Procedures</th>
+   <th class="num">Scalar UDFs</th>
+   <th class="num">Inline TVFs</th>
+   <th class="num">Multi-stmt TVFs</th>
+   <th class="num">Views</th>
+   <th class="num">Compatible</th>
+   <th class="num">Needs review</th>
+   <th class="num">Incompatible</th>
+  </tr>
+  <tr>
+   <td class="num">{{ sumr.by_type.get('procedure', 0) }}</td>
+   <td class="num">{{ sumr.by_type.get('scalar_function', 0) }}</td>
+   <td class="num">{{ sumr.by_type.get('inline_tvf', 0) }}</td>
+   <td class="num">{{ sumr.by_type.get('multi_stmt_tvf', 0) }}</td>
+   <td class="num">{{ sumr.by_type.get('view', 0) }}</td>
+   <td class="num">{% set v = sumr.by_compatibility.get('compatible', 0) %}{% if v %}<span class="pill ok">{{ v }}</span>{% else %}0{% endif %}</td>
+   <td class="num">{% set v = sumr.by_compatibility.get('needs_review', 0) %}{% if v %}<span class="pill warn">{{ v }}</span>{% else %}0{% endif %}</td>
+   <td class="num">{% set v = sumr.by_compatibility.get('incompatible', 0) %}{% if v %}<span class="pill err">{{ v }}</span>{% else %}0{% endif %}</td>
+  </tr>
+ </table>
+ {% endif %}
+ <input class="filter" type="text" placeholder="Filter (schema, name, id, type, compatibility)" oninput="smaFilter(this, 'code-{{ pix }}')"/>
  <table id="code-{{ pix }}">
-  <tr><th>Object</th><th>Type</th><th>Stable id</th><th class="num">T-SQL gaps</th></tr>
-  {% for o in pool.code_objects %}
+  <tr><th>Object</th><th>Type</th><th>Compatibility</th><th class="num">Lines</th><th class="num">Params</th><th>Stable id</th><th class="num">T-SQL gaps</th></tr>
+  {% for o in ext.sorted_code_objects %}
   {% set gaps = ext.gaps_by_object.get(o.code_object_id, []) %}
   <tr>
    <td>
     <details>
      <summary><code>{{ o.schema_name }}.{{ o.object_name }}</code></summary>
+     {% if o.parameters %}
+     <h4>Parameters ({{ o.parameter_count }})</h4>
+     <table>
+      <tr><th class="num">#</th><th>Name</th><th>Type</th><th class="num">Max len</th><th>Output</th><th>Default</th></tr>
+      {% for p in o.parameters %}
+      <tr>
+       <td class="num">{{ p.ordinal }}</td>
+       <td><code>{{ p.parameter_name }}</code></td>
+       <td>{{ p.data_type or '' }}</td>
+       <td class="num">{{ p.max_length if p.max_length is not none else '' }}</td>
+       <td>{{ 'yes' if p.is_output else '' }}</td>
+       <td>{{ 'yes' if p.has_default else '' }}</td>
+      </tr>
+      {% endfor %}
+     </table>
+     {% endif %}
+     {% if o.create_date or o.modify_date or o.line_count %}
+     <p class="small muted">
+      {% if o.create_date %}Created: {{ o.create_date.isoformat() if o.create_date.isoformat is defined else o.create_date }} &middot; {% endif %}
+      {% if o.modify_date %}Modified: {{ o.modify_date.isoformat() if o.modify_date.isoformat is defined else o.modify_date }} &middot; {% endif %}
+      {% if o.line_count %}{{ o.line_count }} line(s){% endif %}
+      {% if o.definition_length %} &middot; {{ o.definition_length }} chars{% endif %}
+     </p>
+     {% endif %}
      {% if gaps %}
      <h4>T-SQL surface gaps</h4>
      <table>
@@ -337,6 +395,12 @@ _TEMPLATE = """<!doctype html>
     </details>
    </td>
    <td>{{ o.object_type }}</td>
+   <td>
+    {% set cls = {'compatible':'ok','needs_review':'warn','incompatible':'err'}.get(o.compatibility, 'info') %}
+    <span class="pill {{ cls }}">{{ o.compatibility or 'compatible' }}</span>
+   </td>
+   <td class="num">{{ o.line_count if o.line_count is not none else '' }}</td>
+   <td class="num">{{ o.parameter_count }}</td>
    <td class="small"><code>{{ o.code_object_id or '' }}</code></td>
    <td class="num">{{ gaps|length }}{% if gaps %} <span class="pill warn">!</span>{% endif %}</td>
   </tr>
@@ -478,6 +542,20 @@ def _build_extras(pool: PoolAnalysis) -> dict[str, Any]:
         "collation_diff_count": sum(1 for c in pool.column_collations if c.differs_from_db),
         "stale_stat_count": sum(
             1 for s in pool.statistics if (s.days_since_update or 0) > 14
+        ),
+        # Code objects sorted: incompatible -> needs_review -> compatible,
+        # then by gap_count desc, then by qualified name. Surfaces problematic
+        # procs / functions at the top of the drill-down table.
+        "sorted_code_objects": sorted(
+            pool.code_objects,
+            key=lambda o: (
+                {"incompatible": 0, "needs_review": 1, "compatible": 2}.get(
+                    o.compatibility or "compatible", 3,
+                ),
+                -(o.gap_count or 0),
+                (o.schema_name or "").lower(),
+                (o.object_name or "").lower(),
+            ),
         ),
     }
 

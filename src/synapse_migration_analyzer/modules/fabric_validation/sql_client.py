@@ -15,9 +15,31 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Iterable
 
+from ..._odbc import resolve_odbc_driver
+
 log = logging.getLogger(__name__)
+
+# Conservative SQL identifier whitelist: letters / digits / underscore / dot,
+# 1-128 chars (the SQL Server limit). Anything else is rejected before being
+# bracketed for use in COUNT_BIG probe.
+_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+
+
+def _quote_ident(name: str) -> str:
+    """Bracket-quote ``name`` after validating it against ``_IDENT_RE``.
+
+    Raises :class:`ValueError` for inputs that don't look like a plain SQL
+    identifier — protects ``fetch_row_count`` against caller-supplied schema /
+    table names that could otherwise break out of ``[...]`` and inject T-SQL.
+    """
+    if not isinstance(name, str) or not _IDENT_RE.match(name):
+        raise ValueError(f"unsafe SQL identifier: {name!r}")
+    # Defence-in-depth: also escape any literal ``]``, even though the regex
+    # already rejects it.
+    return "[" + name.replace("]", "]]") + "]"
 
 
 _OBJECT_COUNT_QUERY = """
@@ -54,8 +76,15 @@ class FabricSqlClient:
         return list(self._query(_COLLATION_QUERY))
 
     def fetch_row_count(self, schema: str, table: str) -> int | None:
-        # Use COUNT_BIG to avoid INT overflow on large tables.
-        sql = f"SELECT COUNT_BIG(*) AS rows FROM [{schema}].[{table}]"
+        # Use COUNT_BIG to avoid INT overflow on large tables. Both names are
+        # validated + bracketed by ``_quote_ident`` so caller-supplied input
+        # cannot escape into T-SQL.
+        try:
+            qualified = f"{_quote_ident(schema)}.{_quote_ident(table)}"
+        except ValueError as exc:
+            log.warning("refusing fetch_row_count for unsafe identifier: %s", exc)
+            return None
+        sql = f"SELECT COUNT_BIG(*) AS rows FROM {qualified}"
         rows = list(self._query(sql))
         if not rows:
             return None
@@ -74,7 +103,10 @@ class FabricSqlClient:
         except ImportError:
             log.debug("pyodbc not available; Fabric validation skipped")
             return []
-        conn_str = self._build_connection_string()
+        try:
+            conn_str = self._build_connection_string()
+        except RuntimeError:
+            return []
         try:
             with pyodbc.connect(conn_str, timeout=30) as cn:
                 cn.timeout = 60
@@ -87,8 +119,18 @@ class FabricSqlClient:
             return []
 
     def _build_connection_string(self) -> str:
+        # Resolve the actual installed driver instead of hard-coding v18 — this
+        # mirrors what ``DedicatedPoolSqlClient`` already does and gives a clean
+        # error message on hosts where v18 is missing but v17 is present.
+        try:
+            driver = resolve_odbc_driver(
+                os.getenv("SQL_ODBC_DRIVER", "ODBC Driver 18 for SQL Server"),
+            )
+        except RuntimeError as exc:  # no driver installed
+            log.debug("Fabric validation skipped: %s", exc)
+            raise
         parts = [
-            "Driver={ODBC Driver 18 for SQL Server}",
+            f"Driver={{{driver}}}",
             f"Server=tcp:{self._server},1433",
             f"Database={self._database}",
             "Encrypt=yes",

@@ -40,8 +40,33 @@ Install with `pip install -e ".[dev]"`.
 | --- | --- | --- | --- |
 | [pytest](https://pypi.org/project/pytest/) | `>=8.0` | Test runner for the `tests/` suite. | MIT |
 | [pytest-cov](https://pypi.org/project/pytest-cov/) | `>=5.0` | Coverage plugin for pytest. | MIT |
+| [pytest-asyncio](https://pypi.org/project/pytest-asyncio/) | `>=0.23` | Async test support for the FastAPI control-plane tests in [tests/web/](tests/web). | Apache-2.0 |
 | [ruff](https://pypi.org/project/ruff/) | `>=0.5` | Linter / formatter (config in `[tool.ruff]`). | MIT |
 | [mypy](https://pypi.org/project/mypy/) | `>=1.10` | Static type checking. | MIT |
+| [fastapi](https://pypi.org/project/fastapi/) | `>=0.115` | (Mirrored from `[web]`) Used by the control-plane test suite. | MIT |
+| [httpx](https://pypi.org/project/httpx/) | `>=0.27` | (Mirrored from `[web]`) Backs `fastapi.testclient.TestClient`. | BSD-3-Clause |
+| [sse-starlette](https://pypi.org/project/sse-starlette/) | `>=2.1` | (Mirrored from `[web]`) Used by the SSE endpoint tests. | BSD-3-Clause |
+
+## Optional dependencies (Python)
+
+### `[web]` — local control plane (`sma serve --with-api`)
+
+Declared under `[project.optional-dependencies].web` in [pyproject.toml](pyproject.toml).
+Install with `pip install -e ".[web]"`. Without these, `sma serve` still works
+as a static file server, but `--with-api` raises a clear install error.
+
+| Package | Version constraint | Purpose | License | Project URL |
+| --- | --- | --- | --- | --- |
+| [fastapi](https://pypi.org/project/fastapi/) | `>=0.115` | HTTP framework backing the `/api/*` endpoints in [src/.../web/](src/synapse_migration_analyzer/web). | MIT | https://github.com/fastapi/fastapi |
+| [uvicorn[standard]](https://pypi.org/project/uvicorn/) | `>=0.30` | ASGI server (`sma serve --with-api` runs `uvicorn.run(app, ...)`). | BSD-3-Clause | https://github.com/encode/uvicorn |
+| [sse-starlette](https://pypi.org/project/sse-starlette/) | `>=2.1` | Server-Sent Events helper used by `GET /api/runs/<id>/events`. | BSD-3-Clause | https://github.com/sysid/sse-starlette |
+| [httpx](https://pypi.org/project/httpx/) | `>=0.27` | HTTP client used internally by FastAPI's TestClient and by future federated-mode hooks. | BSD-3-Clause | https://github.com/encode/httpx |
+
+### `[cost]` — live Cost Management queries
+
+| Package | Version constraint | Purpose | License |
+| --- | --- | --- | --- |
+| [azure-mgmt-costmanagement](https://pypi.org/project/azure-mgmt-costmanagement/) | `>=4.0` | Live consumption queries for `sma analyze-cost`. Without it, the analyzer still runs but emits a `cost.sdk_missing` finding. | MIT |
 
 ## Build system
 

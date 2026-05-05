@@ -38,6 +38,37 @@ A **module-based** walkthrough of the Synapse Migration Analyzer. Each module is
 
 ### 0.2 Clone & install
 
+#### Fast path — `quickstart.ps1` (Windows)
+
+The repo ships a [PowerShell bootstrapper](quickstart.ps1) that performs the
+entire §0.2 sequence in one command. It clones the repo (skip with
+`-SkipClone` if already cloned), creates `.venv`, installs **all** optional
+extras (`dev,cost,web`) so every analyzer module and the control plane are
+ready out of the box, builds the React SPA bundle in `web/dist`, runs
+`sma doctor --offline`, and — when the doctor passes — auto-launches
+`sma serve --with-api --static-dir web\dist` so the browser UI is live at
+`http://127.0.0.1:8000/` at the end of bootstrap.
+
+```powershell
+# Public fork (default)
+.\quickstart.ps1
+
+# Private fork
+.\quickstart.ps1 -Repo Private
+
+# CLI-only host (no Node, no browser UI)
+.\quickstart.ps1 -SkipWebBuild -NoServe
+```
+
+Key switches: `-SkipClone`, `-Branch <name>`, `-PythonExe py`,
+`-SkipDoctor`, `-SkipWebBuild`, `-NoServe`. See the script header for the
+full parameter list.
+
+After the bootstrapper finishes, jump to [§0.3](#03-create-a-service-principal--grant-access)
+for service-principal setup, then [§0.4](#04-configure-env) to fill in `.env`.
+
+#### Manual path
+
 ```powershell
 git clone https://github.com/anbergst_microsoft/SynapseMigrationAnalyzer.git
 cd SynapseMigrationAnalyzer\SynapseMigrationAnalyzer
@@ -48,10 +79,17 @@ pip install -e ".[dev]"
 
 # Optional: enable live Cost Management queries for the `cost` module
 pip install -e ".[cost]"
+
+# Optional: enable the browser-driven control plane (`sma serve --with-api`)
+pip install -e ".[web]"
 ```
 
 > The `cost` extra installs `azure-mgmt-costmanagement`. Without it, `sma analyze-cost`
 > will run but emit a `cost.sdk_missing` finding instead of live data.
+>
+> The `web` extra installs FastAPI + uvicorn + sse-starlette + httpx. Without it,
+> `sma serve` still works as a static file server, but `sma serve --with-api`
+> exits with an install error. See [Optional — browser-driven control plane](#optional--browser-driven-control-plane).
 
 Verify the CLI is on the path:
 
@@ -134,7 +172,7 @@ Azure RBAC and **Synapse RBAC** are *separate*. Being Owner of the subscription 
 | **Synapse artifacts (data plane)** — `*.dev.azuresynapse.net` | `analyze-pipelines`, `analyze-spark-pools` (notebooks, SJDs, linked services, datasets, triggers) | **Synapse Artifact User** (read-only) or **Synapse User** | Synapse Studio → **Manage → Access control** at workspace scope |
 | **Azure Monitor metrics** | `analyze-monitoring` | **Monitoring Reader** | Subscription or resource group containing the workspace |
 | **Azure Cost Management** | `analyze-cost` | **Cost Management Reader** | Subscription or the workspace's resource group |
-| **SQL endpoints** (dedicated + serverless) | `analyze-dedicated-pools`, `analyze-serverless-pools` | SQL `CREATE USER [<sp-name>] FROM EXTERNAL PROVIDER;` + `db_datareader` | Inside each database (run as a SQL admin) |
+| **SQL endpoints** (dedicated + serverless) | `analyze-dedicated-pools`, `analyze-serverless-pools` | SQL `CREATE USER [<sp-name>] FROM EXTERNAL PROVIDER;` + `db_datareader` + `GRANT VIEW DATABASE STATE` + `GRANT VIEW DEFINITION` (so procedures / functions are visible in `sys.objects` / `sys.sql_modules`) | Inside each database (run as a SQL admin) |
 
 Grant Synapse RBAC via **Synapse Studio**:
 `https://web.azuresynapse.net` → pick workspace → **Manage** → **Access control** → **+ Add** → scope `Workspace`, role **Synapse Artifact User**, paste the principal's **object ID** or app name → **Apply**. Allow ~1 minute for propagation.
@@ -268,6 +306,10 @@ For **each** dedicated SQL pool you want to analyze, run this **once** (signed i
 CREATE USER [sma-analyzer] FROM EXTERNAL PROVIDER;
 EXEC sp_addrolemember 'db_datareader', 'sma-analyzer';
 GRANT VIEW DATABASE STATE TO [sma-analyzer];
+-- Required so sys.sql_modules / sys.objects expose stored procedures and
+-- user-defined functions to the analyzer. Without this grant the catalog
+-- silently hides P / FN / IF / TF rows and the report shows views only.
+GRANT VIEW DEFINITION TO [sma-analyzer];
 ```
 
 Optional `.env` knobs:
@@ -325,6 +367,7 @@ write_reports(result, cfg.output_dir, formats=["json", "markdown"])
 | `Missing required environment variables` | `.env` not populated | Copy `.env.example` → `.env`, fill values |
 | `Login failed for user '<token-identified principal>'` | SP not added to the pool | Run the `CREATE USER … FROM EXTERNAL PROVIDER` snippet in §1.2 |
 | `The user does not have permission to perform this action` on DMVs | Missing `VIEW DATABASE STATE` | Run `GRANT VIEW DATABASE STATE TO [sma-analyzer]` |
+| `code_objects` contains only views (no procedures or functions) | Missing `VIEW DEFINITION` — `sys.objects` / `sys.sql_modules` filter out P/FN/IF/TF rows for principals without it | Run `GRANT VIEW DEFINITION TO [sma-analyzer]` (per §1.2) and re-run the analyzer |
 | `IM002 / Data source name not found` | ODBC Driver 18 not installed | Install the driver from the link in §0.1 |
 | Pool reported but no tables/usage | Pool is **paused** | Resume the pool or accept the `errors` entry |
 | `(pyodbc) … TLS/SSL` errors | TLS settings on host | Ensure `Encrypt=yes;TrustServerCertificate=no` (default) and the host trusts the cert chain |
@@ -693,6 +736,70 @@ sma index
 
 Open `output/index.html` in a browser — it links to whichever module HTML reports exist
 (and shows a *missing* card with the exact `sma analyze-...` command for the rest).
+
+---
+
+## Optional — browser-driven control plane
+
+For analysts who would rather drive the analyzer from a browser than the CLI,
+`sma serve --with-api` boots a local FastAPI backend plus the SPA on the same
+origin. It is **opt-in** (extra install) and **loopback-only by default**.
+
+```powershell
+# Install the [web] extras (one-off)
+pip install -e ".[web]"
+
+# Build the SPA bundle once (re-run only when web/ source changes)
+cd web
+npm install
+npm run build
+cd ..
+
+# Boot the control plane
+sma serve --with-api                       # http://127.0.0.1:8000/
+sma serve --with-api --port 8001           # custom port
+sma serve --with-api --runs-dir D:\runs    # custom run repo (default ./runs)
+```
+
+The SPA gets four extra pages when the API is detected (`GET /api/healthz`):
+
+| Page | What it does |
+| --- | --- |
+| **Configuration** | Read / write `.env` from the browser. Secrets are write-only; reads return only `set` / `unset`. Includes a **Validate** button. |
+| **Run** | Pick which modules to run (same module set as `analyze-all`), give the run an optional label, watch live progress over Server-Sent Events. |
+| **Runs** | History of all completed runs with status, duration, error count, readiness score. |
+| **Diff** | Compare any two runs using the same `run_manifest` engine that powers `sma run-delta`. |
+
+The **Dashboard** page gathers workspace-level vitals: readiness score,
+T-SQL surface findings, recommendation count and SKU advisory at the top;
+top blockers and inputs analyzed; a *Storage* section with stat cards for
+dedicated-pool data / index space, ADLS used capacity, storage-account
+count and a per-pool table; and a *Pipeline activity (last 7 days)*
+section showing daily run rate, success rate, daily data movement, the
+sampling window and the top 10 pipelines by run count. Storage and
+pipeline sections render only when the corresponding `storage.json` /
+`pipelines.json` exist for the selected run.
+
+Results are persisted under `--runs-dir/<id>/` (default `./runs/<id>/`) so the
+rest of the SPA — Dashboard, Code objects, Recommendations, Runbook, Delta —
+transparently reads from the currently-selected run. The selected run id
+lives in the URL hash (`#run=<id>`), so deep-links and refreshes are stable.
+
+### Security posture
+
+The `--with-api` server has **no authentication**:
+
+- Bound to `127.0.0.1` by default.
+- Refuses non-loopback hosts unless you pass `--i-know-this-is-not-auth`.
+- All state-changing requests (`POST` / `PUT` / `DELETE`) require an
+  `X-SMA-API: 1` header (defence in depth against drive-by CSRF; the SPA
+  sets it).
+- Run id and module name are validated against strict regexes; the run
+  repository resolves all paths under `--runs-dir` to block traversal.
+- The client secret is never returned over the wire — only its presence.
+
+Do not expose the control plane on a shared or multi-user host. If you need
+remote access, put it behind your own authenticating reverse proxy or VPN.
 
 ---
 

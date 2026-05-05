@@ -72,6 +72,19 @@ class WorkloadGroup(BaseModel):
     request_min_resource_grant_pct: float | None = None
 
 
+class CodeObjectParameter(BaseModel):
+    """One parameter on a stored procedure or function."""
+    schema_name: str
+    object_name: str
+    object_type: str
+    parameter_name: str
+    data_type: str | None = None
+    max_length: int | None = None
+    is_output: bool = False
+    has_default: bool = False
+    ordinal: int = 0
+
+
 class CodeObject(BaseModel):
     schema_name: str
     object_name: str
@@ -79,6 +92,25 @@ class CodeObject(BaseModel):
     definition: str | None = None
     # v2: stable identifier for cross-run diffs and per-object gap rollups.
     code_object_id: str | None = None
+    # v3 (1.3.0): SQL-plane inventory depth.
+    create_date: datetime | None = None
+    modify_date: datetime | None = None
+    line_count: int | None = None
+    definition_length: int | None = None
+    # True when the captured ``definition`` was truncated by the collector
+    # (currently a 50 KB cap). Downstream T-SQL surface scans should treat
+    # findings on truncated objects as best-effort.
+    definition_truncated: bool = False
+    parameter_count: int = 0
+    parameters: list[CodeObjectParameter] = Field(default_factory=list)
+    uses_ansi_nulls: bool | None = None
+    uses_quoted_identifier: bool | None = None
+    # Per-object Fabric compatibility verdict, stamped after T-SQL surface scan.
+    # Values: "compatible" | "needs_review" | "incompatible". Defaults to
+    # "compatible" when no T-SQL surface gaps were found.
+    compatibility: str = "compatible"
+    gap_severities: list[str] = Field(default_factory=list)
+    gap_count: int = 0
 
 
 # --- v2 -----------------------------------------------------------------------
@@ -150,6 +182,22 @@ class TsqlSurfaceGap(BaseModel):
     fabric_action: str | None = None
 
 
+class CodeObjectSummary(BaseModel):
+    """Per-pool rollup of stored-procedure / function / view inventory + Fabric compatibility.
+
+    Counts are bucketed by both ``object_type`` (procedure / scalar UDF / inline TVF /
+    multi-statement TVF / view) and ``compatibility`` (compatible / needs_review /
+    incompatible). The ``compatibility_pct`` is ``compatible / total * 100`` rounded
+    to one decimal; ``None`` when there are no code objects (paused pool, no DMV access).
+    """
+    total: int = 0
+    by_type: dict[str, int] = Field(default_factory=dict)
+    by_compatibility: dict[str, int] = Field(default_factory=dict)
+    compatibility_pct: float | None = None
+    incompatible_object_ids: list[str] = Field(default_factory=list)
+    needs_review_object_ids: list[str] = Field(default_factory=list)
+
+
 class PoolAnalysis(BaseModel):
     inventory: PoolInventory
     schemas: list[SchemaInfo] = Field(default_factory=list)
@@ -166,6 +214,7 @@ class PoolAnalysis(BaseModel):
     column_stats: list[ColumnStat] = Field(default_factory=list)
     distribution_candidates: list[DistributionCandidate] = Field(default_factory=list)
     tsql_surface_gaps: list[TsqlSurfaceGap] = Field(default_factory=list)
+    code_object_summary: CodeObjectSummary | None = None
     errors: list[str] = Field(default_factory=list)
 
 

@@ -34,6 +34,11 @@ class ReadinessSummary(BaseModel):
     bucket: str                             # ready | ready-with-effort | blocked
     counts: dict[str, int] = Field(default_factory=dict)
     top_blockers: list[Recommendation] = Field(default_factory=list)
+    # T-SQL surface compatibility (computed from dedicated_pools code_objects).
+    tsql_compatibility_pct: float | None = None
+    tsql_objects_total: int = 0
+    tsql_objects_incompatible: int = 0
+    tsql_objects_needs_review: int = 0
 
 
 class RunbookStep(BaseModel):

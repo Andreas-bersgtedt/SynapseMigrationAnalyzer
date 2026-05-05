@@ -46,6 +46,34 @@ Out of scope:
 - Issues that require the attacker to already have privileged Azure access
   equivalent to what the tool itself needs to function (Reader + DMV access).
 
+## Web control plane (`sma serve --with-api`)
+
+The optional control plane shipped in v1.3 is a **local-only**, **single-user**
+convenience layer. It has no authentication and is not designed to be exposed
+on a network. The threat model and mitigations are:
+
+- **Bind address.** Loopback (`127.0.0.1`) only by default. Non-loopback binds
+  require an explicit `--i-know-this-is-not-auth` flag.
+- **CSRF.** All state-changing requests (`POST` / `PUT` / `DELETE` / `PATCH`)
+  must include the `X-SMA-API: 1` header, which is set by the SPA. Browsers
+  strip custom headers from cross-origin form posts, so a drive-by site cannot
+  forge a request that mutates state.
+- **CORS.** Disabled (`allow_origins=[]`); same-origin only.
+- **Path traversal.** Run identifiers must match `^\d{8}T\d{6}Z-[0-9a-f]{8}$`,
+  module names must match `^[a-z][a-z0-9_]*$`, and every filesystem join is
+  resolved under the configured `--runs-dir`.
+- **Secret handling.** Reading `/api/config` never returns the client secret —
+  only its presence (`set` / `unset`). Writes accept a plaintext secret only
+  via `PUT /api/config` and persist it to the same `.env` file the CLI uses,
+  with permissions tightened to `0o600` on POSIX hosts.
+- **No auth.** There is no user / session model. If you need remote access,
+  put the control plane behind your own authenticating reverse proxy or VPN —
+  do not expose it directly.
+
+Vulnerabilities in this surface are in scope for [the report process above](#reporting-a-vulnerability).
+Deployment scenarios that involve exposing `--with-api` on a shared host without
+additional auth are explicitly out of scope; that is documented as unsafe.
+
 ## Supported versions
 
 Only the latest released version on `main` receives security fixes.

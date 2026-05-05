@@ -124,7 +124,7 @@ class MonitoringClient:
                     aggregation=aggregation,
                 )
                 break
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001 - SDK + test fakes raise varied types
                 bad = _parse_invalid_metric_name(str(exc))
                 if not bad or bad not in names:
                     raise

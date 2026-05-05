@@ -13,14 +13,25 @@ WITH dist AS (
         ON cdp.object_id = cdp_props.object_id AND cdp.column_id = cdp_props.column_id
 ),
 size_agg AS (
+    -- Aggregate node-level partition stats and map back to the user
+    -- table object_id via sys.pdw_nodes_tables + sys.pdw_table_mappings.
+    -- Joining sys.dm_pdw_nodes_db_partition_stats.object_id directly
+    -- to sys.tables.object_id is incorrect (the former is the node-local
+    -- physical table object_id) and produces NULL row_count / sizes
+    -- for every user table.
     SELECT
-        ps.object_id,
-        SUM(ps.reserved_page_count)  * 8.0 / 1024.0 AS reserved_space_mb,
-        SUM(ps.used_page_count)      * 8.0 / 1024.0 AS data_space_mb,
+        tm.object_id                                          AS object_id,
+        SUM(ps.reserved_page_count)  * 8.0 / 1024.0           AS reserved_space_mb,
+        SUM(ps.used_page_count)      * 8.0 / 1024.0           AS data_space_mb,
         SUM(ps.reserved_page_count - ps.used_page_count) * 8.0 / 1024.0 AS index_space_mb,
-        SUM(ps.row_count)                                                 AS row_count
+        SUM(ps.row_count)                                     AS row_count
     FROM sys.dm_pdw_nodes_db_partition_stats ps
-    GROUP BY ps.object_id
+    INNER JOIN sys.pdw_nodes_tables nt
+        ON ps.object_id = nt.object_id
+       AND ps.pdw_node_id = nt.pdw_node_id
+    INNER JOIN sys.pdw_table_mappings tm
+        ON nt.name = tm.physical_name
+    GROUP BY tm.object_id
 ),
 part_agg AS (
     SELECT object_id, COUNT(DISTINCT partition_number) AS partition_count
