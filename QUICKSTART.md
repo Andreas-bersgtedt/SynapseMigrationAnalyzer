@@ -49,6 +49,15 @@ ready out of the box, builds the React SPA bundle in `web/dist`, runs
 `sma serve --with-api --static-dir web\dist` so the browser UI is live at
 `http://127.0.0.1:8000/` at the end of bootstrap.
 
+If you don't have the repo cloned yet, you can grab just the bootstrapper
+straight from GitHub and run it from any working directory — it will clone
+the repo for you (unless you pass `-SkipClone`):
+
+```powershell
+$url = 'https://raw.githubusercontent.com/Andreas-bersgtedt/SynapseMigrationAnalyzer/main/quickstart.ps1'
+Invoke-WebRequest -Uri $url -OutFile 'quickstart.ps1'
+```
+
 ```powershell
 # Public fork (default)
 .\quickstart.ps1
