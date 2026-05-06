@@ -72,6 +72,6 @@ self-contained.
 
 ## Versioning
 
-This guide is written for **Synapse Migration Analyzer 2.0.0**. Changes
+This guide is written for **Synapse Migration Analyzer 2.2.2**. Changes
 to navigation, pages or fields will be reflected here in lock-step with
 [CHANGELOG.md](../../CHANGELOG.md).

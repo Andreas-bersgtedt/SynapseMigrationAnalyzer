@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { apiCancelRun, apiStartRun, setRunIdInHash } from "../api/loader";
 import { useSseProgress, type SseEvent } from "../hooks/useSseProgress";
+import HelpLink from "../components/HelpLink";
 
 const ALL_MODULES = [
   "dedicated_pools",
@@ -62,7 +63,7 @@ export default function Run(): JSX.Element {
 
   return (
     <section className="page">
-      <h1>Run analysis</h1>
+      <h1>Run analysis <HelpLink slug="09-run-page" /></h1>
       <p className="muted">
         Select which analyzer modules to run. Results are written to
         <code> runs/&lt;id&gt;/</code> and shown live below.

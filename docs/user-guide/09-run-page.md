@@ -26,8 +26,8 @@ Label  [ pre-migration baseline ………………………………… ]
 Modules
 [x] dedicated_pools     [x] serverless_pools   [x] storage
 [x] security            [x] governance         [x] monitoring
-[x] cost                [ ] pipelines          [ ] fabric_validation
-[x] fabric_mapping      [ ] policies
+[x] cost                [ ] pipelines
+[x] fabric_mapping
 
 Options
 [ ] --with-run-history     Days [ 7 ]
@@ -63,7 +63,7 @@ list grows).
 
 ### Modules
 
-The 11 first-class modules:
+The first-class modules surfaced by the Run page:
 
 | Module             | Default | Notes |
 | ------------------ | :-----: | ----- |
@@ -75,9 +75,14 @@ The 11 first-class modules:
 | `monitoring`       |   ✓     | DWU usage / log query stats. |
 | `cost`             |   ✓     | DWU-hours and spend attribution. |
 | `pipelines`        |         | Pipelines + activities + linked services. |
-| `fabric_validation` |        | Cross-checks against Fabric capacity targets. |
 | `fabric_mapping`   |   ✓     | Aggregates everything into recommendations & runbook. |
-| `policies`         |         | Subscription policy / role inventory. |
+
+`fabric_validation` is **experimental** and CLI-only (opt-in via
+`--include fabric_validation`). It performs post-migration parity
+checks (object counts, row counts, collations, T-SQL surface
+resolution) against a target Fabric warehouse. It is **not surfaced
+in the SPA Run page**; consume the JSON / Markdown / HTML output
+directly. Schema and CLI flags may change without notice.
 
 ### Options
 

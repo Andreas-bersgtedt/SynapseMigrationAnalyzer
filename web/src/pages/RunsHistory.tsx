@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { apiListRuns, setRunIdInHash, type RunMeta } from "../api/loader";
+import HelpLink from "../components/HelpLink";
 
 export default function RunsHistory(): JSX.Element {
   const [runs, setRuns] = useState<RunMeta[] | null>(null);
@@ -15,7 +16,7 @@ export default function RunsHistory(): JSX.Element {
 
   return (
     <section className="page">
-      <h1>Runs</h1>
+      <h1>Runs <HelpLink slug="10-runs-history" /></h1>
       <table className="table">
         <thead>
           <tr>

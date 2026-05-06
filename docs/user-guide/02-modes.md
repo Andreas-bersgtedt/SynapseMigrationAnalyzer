@@ -27,7 +27,7 @@ Are you handing the analysis to someone else?
 | ------------------------------- | ---------------------------- | -------------------------------------- |
 | Source of data                  | `output/<module>.json`       | `runs/<id>/<module>.json` via API      |
 | Run picker                      | not shown                    | dropdown in top-right, hash-persisted  |
-| Top-level pages                 | 5 (Dashboard, Code objects, Recommendations, Runbook, Delta) | 9 (adds Run, Runs, Diff, Configuration) |
+| Top-level pages                 | 9 (Dashboard, Code objects, Recommendations, Runbook, Delta, Cost, Governance, Security, Help) | 12 (Dashboard, Code objects, Recommendations, Runbook, Cost, Governance, Security, Run, Runs, Diff, Configuration, Help — Delta is replaced by Diff) |
 | Can start runs?                 | no                           | yes (`POST /api/runs`)                 |
 | Can edit `.env`?                | no                           | yes (`PUT /api/config`)                |
 | Live progress                   | n/a                          | Server-Sent Events at `/api/runs/<id>/events` |
@@ -46,8 +46,9 @@ Static deliverable mode:
 ┌─────────────────────────────────────────────────────────────────────┐
 │  Synapse Migration Analyzer                                         │
 │                                                                     │
-│  [ Dashboard ] [ Code objects ] [ Recommendations ]                 │
-│                [ Runbook ]      [ Delta ]                           │
+│  [ Dashboard ] [ Code objects ] [ Recommendations ] [ Runbook ]     │
+│  [ Delta ]     [ Cost ]         [ Governance ]      [ Security ]    │
+│  [ Help ]                                                           │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -57,10 +58,15 @@ Control plane mode:
 ┌─────────────────────────────────────────────────────────────────────┐
 │  Synapse Migration Analyzer                              [run picker]│
 │                                                                     │
-│  [ Dashboard ] [ Code objects ] [ Recommendations ]                 │
-│  [ Runbook ]   [ Run ] [ Runs ] [ Diff ] [ Configuration ]          │
+│  [ Dashboard ] [ Code objects ] [ Recommendations ] [ Runbook ]     │
+│  [ Cost ]      [ Governance ]   [ Security ]                        │
+│  [ Run ]       [ Runs ]         [ Diff ]            [ Configuration ]│
+│  [ Help ]                                                           │
 └─────────────────────────────────────────────────────────────────────┘
 ```
+
+Note: control-plane mode replaces the static **Delta** page with the
+live **Diff** page (full pairwise diff via the API).
 
 The four control-plane-only routes (`/run`, `/runs`, `/diff`,
 `/configuration`) are **not registered** when the API is missing — if

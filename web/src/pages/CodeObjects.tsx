@@ -11,6 +11,7 @@ import {
 import { loadDedicatedPools } from "../api/loader";
 import { useAsync } from "../hooks/useAsync";
 import { Empty, SeverityPill } from "../components/Atoms";
+import HelpLink from "../components/HelpLink";
 import type { CodeObject, TsqlSurfaceGap } from "../types";
 
 interface Row extends CodeObject {
@@ -125,7 +126,7 @@ export default function CodeObjects() {
 
   return (
     <>
-      <h1>Code objects (SQL plane)</h1>
+      <h1>Code objects (SQL plane) <HelpLink slug="05-code-objects" /></h1>
       <div className="muted small" style={{ marginBottom: 12 }}>
         {rows.length} object(s) across {data.pools.length} pool(s)
       </div>

@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { loadFabricMapping } from "../api/loader";
 import { useAsync } from "../hooks/useAsync";
 import { Empty, SeverityPill } from "../components/Atoms";
+import HelpLink from "../components/HelpLink";
 
 const SEV_ORDER = { blocker: 0, warning: 1, info: 2 } as Record<string, number>;
 
@@ -39,7 +40,7 @@ export default function Recommendations() {
 
   return (
     <>
-      <h1>Recommendations</h1>
+      <h1>Recommendations <HelpLink slug="06-recommendations" /></h1>
       <div className="toolbar">
         <input
           placeholder="Filter (id, title, detail, target)"

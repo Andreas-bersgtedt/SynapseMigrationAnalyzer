@@ -1,6 +1,7 @@
 import { loadFabricMapping, loadPipelines, loadStorage, detectMode, getRunIdFromHash } from "../api/loader";
 import { useAsync } from "../hooks/useAsync";
 import { Empty, PctPill, ScorePill, SeverityPill, StatCard } from "../components/Atoms";
+import HelpLink from "../components/HelpLink";
 import type { Recommendation, Severity, ModuleSummary } from "../types";
 
 function fmtNum(n: number | null | undefined, digits = 0): string {
@@ -19,7 +20,10 @@ function fmtMb(mb: number | null | undefined): string {
   if (mb == null || !Number.isFinite(mb)) return "—";
   if (mb >= 1024 * 1024) return `${(mb / 1024 / 1024).toFixed(2)} TB`;
   if (mb >= 1024) return `${(mb / 1024).toFixed(2)} GB`;
-  return `${mb.toFixed(0)} MB`;
+  if (mb >= 10) return `${mb.toFixed(0)} MB`;
+  if (mb >= 1) return `${mb.toFixed(1)} MB`;
+  if (mb > 0) return `${mb.toFixed(2)} MB`;
+  return `0 MB`;
 }
 
 export default function Dashboard() {
@@ -66,7 +70,7 @@ export default function Dashboard() {
   return (
     <>
       <h1 style={{ margin: "0 0 4px" }}>
-        {fm.workspace_name ?? "(workspace)"}
+        {fm.workspace_name ?? "(workspace)"} <HelpLink slug="04-dashboard" />
       </h1>
       <div className="muted small" style={{ marginBottom: 16 }}>
         Generated {new Date(fm.generated_at).toLocaleString()}
@@ -267,6 +271,7 @@ function PipelinesSection({ pipelines }: { pipelines: import("../types").Pipelin
   const totalSucceeded = stats.reduce((s, r) => s + (r.w?.succeeded ?? 0), 0);
   const totalFailed = stats.reduce((s, r) => s + (r.w?.failed ?? 0), 0);
   const totalDataMb = stats.reduce((s, r) => s + (r.w?.total_data_moved_mb ?? 0), 0);
+  const dataMovingPipelines = stats.filter((r) => r.has_data_movement && (r.w?.total_data_moved_mb ?? 0) > 0).length;
   const dailyRuns = totalRuns / window;
   const dailyDataMb = totalDataMb / window;
   const successRate = totalSucceeded + totalFailed > 0
@@ -293,9 +298,11 @@ function PipelinesSection({ pipelines }: { pipelines: import("../types").Pipelin
           sub={`${fmtNum(totalSucceeded)} ok · ${fmtNum(totalFailed)} failed`}
         />
         <StatCard
-          label="Daily data movement"
-          value={fmtMb(dailyDataMb)}
-          sub={`${fmtMb(totalDataMb)} total`}
+          label={`Data moved (last ${window} days)`}
+          value={fmtMb(totalDataMb)}
+          sub={dataMovingPipelines > 0
+            ? `~ ${fmtMb(dailyDataMb)} / day avg · ${dataMovingPipelines} pipeline${dataMovingPipelines === 1 ? "" : "s"} with data activity`
+            : "no data-movement activity observed"}
         />
         <StatCard
           label="Window"

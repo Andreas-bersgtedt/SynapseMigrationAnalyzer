@@ -34,8 +34,14 @@ export default defineConfig(({ mode, command }) => {
       port: 5173,
       strictPort: false,
       fs: {
-        // Allow serving files from the analyzer output_dir during dev.
-        allow: [path.resolve(__dirname, ".."), dataDir],
+        // Allow serving files from the analyzer output_dir during dev,
+        // and from docs/user-guide/ (one level above the web/ folder)
+        // for the in-app help system that imports markdown via ?raw.
+        allow: [
+          path.resolve(__dirname, ".."),
+          path.resolve(__dirname, "..", "docs"),
+          dataDir,
+        ],
       },
     },
     build: {
@@ -47,6 +53,7 @@ export default defineConfig(({ mode, command }) => {
           manualChunks: {
             react: ["react", "react-dom", "react-router-dom"],
             table: ["@tanstack/react-table"],
+            markdown: ["react-markdown", "remark-gfm", "rehype-slug"],
           },
         },
       },

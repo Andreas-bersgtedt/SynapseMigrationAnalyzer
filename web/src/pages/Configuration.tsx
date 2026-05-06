@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import HelpLink from "../components/HelpLink";
 import {
   apiGetConfig,
   apiPutConfig,
@@ -71,7 +72,7 @@ export default function Configuration(): JSX.Element {
 
   return (
     <section className="page">
-      <h1>Configuration</h1>
+      <h1>Configuration <HelpLink slug="12-configuration" /></h1>
       <p className="muted">
         Reads / writes <code>{cfg.env_file}</code>. The client secret is never
         returned by the API; only its presence (<code>{cfg.azure.client_secret}</code>) is shown.

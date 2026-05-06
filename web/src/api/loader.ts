@@ -17,10 +17,13 @@
  * deep-links and refreshes.
  */
 import type {
+  CostReport,
   DedicatedPoolsReport,
   FabricMappingReport,
+  GovernanceReport,
   PipelinesReport,
   RunDelta,
+  SecurityReport,
   StorageReport,
 } from "../types";
 
@@ -139,6 +142,12 @@ export const loadRunDelta = () => fetchJson<RunDelta>("run_delta.json");
 export const loadStorage = () => fetchJson<StorageReport>("storage.json");
 
 export const loadPipelines = () => fetchJson<PipelinesReport>("pipelines.json");
+
+export const loadCost = () => fetchJson<CostReport>("cost.json");
+
+export const loadGovernance = () => fetchJson<GovernanceReport>("governance.json");
+
+export const loadSecurity = () => fetchJson<SecurityReport>("security.json");
 
 export const loadModule = <T,>(filename: string) => fetchJson<T>(filename);
 

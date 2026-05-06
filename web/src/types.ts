@@ -1,4 +1,4 @@
-/**
+﻿/**
  * TypeScript types mirroring the Pydantic v2 models under
  * src/synapse_migration_analyzer/modules/<module>/models.py. We intentionally
  * declare these by hand (not auto-generated) so the front end stays decoupled
@@ -268,5 +268,174 @@ export interface PipelinesReport {
   generated_at: string;
   pipelines: Array<{ name: string; activity_count?: number }>;
   run_history?: PipelineRunHistory | null;
+  errors?: string[];
+}
+
+// ---------------------------------------------------------------------------
+// cost.json
+// ---------------------------------------------------------------------------
+
+export interface MonthlyCostRow {
+  month: string;
+  resource_kind: string;
+  resource_name?: string | null;
+  sku?: string | null;
+  cost: number;
+  currency: string;
+  usage_quantity: number;
+  usage_unit?: string | null;
+}
+
+export interface FabricCostComparison {
+  synapse_avg_monthly_cost: number;
+  fabric_capacity_sku?: string | null;
+  fabric_estimated_monthly_cost?: number | null;
+  delta_abs?: number | null;
+  delta_pct?: number | null;
+  notes?: string | null;
+}
+
+export interface CostFinding {
+  rule_id: string;
+  severity: string;
+  title: string;
+  detail?: string | null;
+  resource?: string | null;
+}
+
+export interface CostReport {
+  workspace_name: string;
+  subscription_id: string;
+  resource_group: string;
+  generated_at: string;
+  window_start: string;
+  window_end: string;
+  rows: MonthlyCostRow[];
+  monthly_totals: Record<string, number>;
+  by_resource_kind: Record<string, number>;
+  by_resource_name: Record<string, number>;
+  fabric_comparison?: FabricCostComparison | null;
+  findings: CostFinding[];
+  errors?: string[];
+  collection_status: string;
+}
+
+// ---------------------------------------------------------------------------
+// governance.json
+// ---------------------------------------------------------------------------
+
+export interface RoleAssignment {
+  scope: string;
+  scope_kind: string;
+  role_name: string;
+  role_definition_id: string;
+  principal_id: string;
+  principal_type?: string | null;
+  principal_display_name?: string | null;
+  assignment_id: string;
+  plane?: string;
+}
+
+export interface ManagedPrivateEndpoint {
+  name: string;
+  target_resource_id?: string | null;
+  target_resource_type?: string | null;
+  group_id?: string | null;
+  provisioning_state?: string | null;
+  connection_state?: string | null;
+  fqdns?: string[];
+}
+
+export interface CustomerManagedKey {
+  resource_id: string;
+  resource_kind: string;
+  enabled: boolean;
+  key_vault_uri?: string | null;
+  key_name?: string | null;
+  key_version?: string | null;
+  user_assigned_identity_id?: string | null;
+  notes?: string | null;
+}
+
+export interface GovernanceFinding {
+  rule_id: string;
+  severity: string;
+  resource_id?: string | null;
+  title: string;
+  detail?: string | null;
+}
+
+export interface GovernanceReport {
+  workspace_name: string;
+  subscription_id: string;
+  resource_group: string;
+  generated_at: string;
+  role_assignments: RoleAssignment[];
+  managed_private_endpoints: ManagedPrivateEndpoint[];
+  customer_managed_keys: CustomerManagedKey[];
+  purview_account?: string | null;
+  purview_lineage?: unknown[];
+  findings: GovernanceFinding[];
+  errors?: string[];
+}
+
+// ---------------------------------------------------------------------------
+// security.json
+// ---------------------------------------------------------------------------
+
+export interface FirewallRule {
+  resource_id: string;
+  resource_kind: string;
+  name: string;
+  start_ip?: string | null;
+  end_ip?: string | null;
+  is_allow_all?: boolean;
+  is_allow_azure_services?: boolean;
+}
+
+export interface WorkspaceSecuritySettings {
+  workspace_name: string;
+  aad_only_authentication?: boolean | null;
+  public_network_access?: string | null;
+  minimum_tls_version?: string | null;
+  encryption_at_rest?: string | null;
+  managed_vnet?: boolean | null;
+  notes?: string | null;
+}
+
+export interface CredentialEntry {
+  container: string;
+  container_name: string;
+  credential_kind: string;
+  secret_reference?: string | null;
+  has_inline_secret?: boolean;
+  notes?: string | null;
+}
+
+export interface PoolTdeStatus {
+  pool_name: string;
+  resource_id: string;
+  status: string;
+}
+
+export interface SecurityFinding {
+  rule_id: string;
+  severity: string;
+  resource_id?: string | null;
+  title: string;
+  detail?: string | null;
+}
+
+export interface SecurityReport {
+  workspace_name: string;
+  subscription_id: string;
+  resource_group: string;
+  generated_at: string;
+  workspace_settings?: WorkspaceSecuritySettings | null;
+  firewall_rules: FirewallRule[];
+  credentials: CredentialEntry[];
+  pool_tde_status: PoolTdeStatus[];
+  aad_admins: string[];
+  findings: SecurityFinding[];
   errors?: string[];
 }

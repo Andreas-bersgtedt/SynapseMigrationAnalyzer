@@ -1,6 +1,7 @@
 import { loadRunDelta } from "../api/loader";
 import { useAsync } from "../hooks/useAsync";
 import { Empty } from "../components/Atoms";
+import HelpLink from "../components/HelpLink";
 
 const STATUS_PILL: Record<string, string> = {
   added: "ok",
@@ -23,7 +24,7 @@ export default function Delta() {
 
   return (
     <>
-      <h1>Run delta</h1>
+      <h1>Run delta <HelpLink slug="08-delta" /></h1>
       <div className="muted small" style={{ marginBottom: 12 }}>
         {data.previous_run ? <>Previous: <code>{data.previous_run}</code> · </> : null}
         Current: <code>{data.current_run}</code> · Generated{" "}

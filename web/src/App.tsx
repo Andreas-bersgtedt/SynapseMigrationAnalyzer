@@ -4,13 +4,17 @@ import { detectMode, type ApiMode } from "./api/loader";
 import { RunPicker } from "./components/RunPicker";
 import CodeObjects from "./pages/CodeObjects";
 import Configuration from "./pages/Configuration";
+import Cost from "./pages/Cost";
 import Dashboard from "./pages/Dashboard";
 import Delta from "./pages/Delta";
+import Governance from "./pages/Governance";
+import Help from "./pages/Help";
 import Recommendations from "./pages/Recommendations";
 import Run from "./pages/Run";
 import RunDiff from "./pages/RunDiff";
 import Runbook from "./pages/Runbook";
 import RunsHistory from "./pages/RunsHistory";
+import Security from "./pages/Security";
 
 const STATIC_NAV = [
   { to: "/", label: "Dashboard", end: true },
@@ -18,6 +22,10 @@ const STATIC_NAV = [
   { to: "/recommendations", label: "Recommendations" },
   { to: "/runbook", label: "Runbook" },
   { to: "/delta", label: "Delta" },
+  { to: "/cost", label: "Cost" },
+  { to: "/governance", label: "Governance" },
+  { to: "/security", label: "Security" },
+  { to: "/help", label: "Help" },
 ];
 
 const CONTROL_PLANE_NAV = [
@@ -25,10 +33,14 @@ const CONTROL_PLANE_NAV = [
   { to: "/code-objects", label: "Code objects" },
   { to: "/recommendations", label: "Recommendations" },
   { to: "/runbook", label: "Runbook" },
+  { to: "/cost", label: "Cost" },
+  { to: "/governance", label: "Governance" },
+  { to: "/security", label: "Security" },
   { to: "/run", label: "Run" },
   { to: "/runs", label: "Runs" },
   { to: "/diff", label: "Diff" },
   { to: "/configuration", label: "Configuration" },
+  { to: "/help", label: "Help" },
 ];
 
 export default function App() {
@@ -71,6 +83,11 @@ export default function App() {
           <Route path="/recommendations" element={<Recommendations />} />
           <Route path="/runbook" element={<Runbook />} />
           <Route path="/delta" element={<Delta />} />
+          <Route path="/cost" element={<Cost />} />
+          <Route path="/governance" element={<Governance />} />
+          <Route path="/security" element={<Security />} />
+          <Route path="/help" element={<Help />} />
+          <Route path="/help/:slug" element={<Help />} />
           {mode === "control-plane" && (
             <>
               <Route path="/run" element={<Run />} />

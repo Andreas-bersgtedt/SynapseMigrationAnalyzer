@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { loadFabricMapping } from "../api/loader";
 import { useAsync } from "../hooks/useAsync";
 import { Empty, SeverityPill } from "../components/Atoms";
+import HelpLink from "../components/HelpLink";
 
 export default function Runbook() {
   const { data, loading } = useAsync(loadFabricMapping);
@@ -23,7 +24,7 @@ export default function Runbook() {
 
   return (
     <>
-      <h1>Migration runbook</h1>
+      <h1>Migration runbook <HelpLink slug="07-runbook" /></h1>
       {Array.from(byPhase.entries()).map(([phase, steps]) => (
         <section className="section" key={phase}>
           <h2>{phase}</h2>

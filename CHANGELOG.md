@@ -8,6 +8,133 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No changes yet._
 
+## [2.2.2] - 2026-05-06
+
+### Removed
+- **Reverted the in-app Fabric validation page** added in 2.2.1. The
+  `fabric_validation` module is still considered **experimental** —
+  schema, CLI flags and check coverage may change without notice — so
+  it should not have been promoted to a first-class SPA page yet. The
+  module continues to run when explicitly included; consume the
+  `fabric_validation.json` / Markdown / HTML output directly.
+
+### Documentation
+- [`docs/user-guide/09-run-page.md`](docs/user-guide/09-run-page.md):
+  the `fabric_validation` row in the modules table is now flagged
+  **Experimental**, with a one-line summary of what the checks cover
+  and a note that the SPA does not surface this module.
+
+## [2.2.1] - 2026-05-06
+
+### Added
+- **In-app Fabric validation page** (`/fabric-validation`). Renders the
+  existing `fabric_validation.json` output (post-migration validation
+  vs. a target Fabric warehouse): KPI tiles (pass rate, mismatches,
+  missing, errors), shared status + text filter, collection-error
+  list, and four tables for object-count, row-count, collation, and
+  T-SQL surface checks. Each row is colour-coded via a `StatusPill`
+  (`match`/`resolved` green; `mismatch`/`still_present`/`missing`/
+  `object_missing`/`error` red; `extra` amber). Visible in both static
+  and control-plane modes; no backend changes.
+
+## [2.2.0] - 2026-05-06
+
+### Added
+- **In-app Cost / Governance / Security pages.** The SPA now renders
+  the existing `cost.json`, `governance.json` and `security.json`
+  outputs that previously were only viewable as standalone per-module
+  HTML reports.
+  - **Cost** (`/cost`): collection-status banner (covers `sdk_missing`,
+    `live_disabled`, `empty_window`, `error`), header KPIs (months
+    observed, window total, average monthly, finding count), Fabric
+    capacity comparison card (Synapse avg vs estimated Fabric SKU,
+    `delta_pct`), severity-sorted findings table with text + severity
+    filters, monthly totals with month-over-month deltas, breakdown by
+    resource kind (cost + share of total) and top 25 resources by
+    spend.
+  - **Governance** (`/governance`): KPI strip (role assignments,
+    privileged role count, managed private endpoints with pending /
+    not-approved count, customer-managed keys enabled / configured,
+    findings), severity-sorted findings table, role assignments table
+    with text filter and a "privileged only" toggle (`Owner`,
+    `Contributor`, `User Access Administrator`, `Role Based Access
+    Control Administrator`), managed private endpoints table with
+    approval-state pills, customer-managed key cards, Purview block.
+  - **Security** (`/security`): KPI strip (findings, firewall rules
+    incl. allow-all count, pool TDE coverage, inline-secret count),
+    workspace settings card (AAD-only, public network access, minimum
+    TLS, encryption at rest, managed VNet), severity-sorted findings
+    table, firewall rules table with red `allow-all` / amber
+    `allow-azure` pills, dedicated pool TDE table, credentials
+    inventory with red `inline` / green `vaulted` pills, AAD admins
+    list.
+  - All three pages are visible in both static and control-plane
+    modes; no backend or schema changes were needed (the
+    `/api/runs/<id>/modules/<module>` endpoint already serves these
+    JSON files).
+
+### Fixed
+- **Cost module: 429 throttles from Cost Management no longer abort the
+  module.** `CostClient.fetch_monthly_breakdown_with_status` now retries
+  `query.usage` with bounded exponential backoff + full jitter on 429
+  and 5xx responses, honouring a `Retry-After` header when the service
+  sends one. Defaults: 5 attempts, 2 s base, 60 s cap. Tunable via
+  `SMA_COST_RETRY_MAX`, `SMA_COST_RETRY_BASE_MS`, `SMA_COST_RETRY_CAP_MS`.
+  After the final failed attempt the original exception is still
+  surfaced to the analyzer (which already converts it into a
+  `cost.collection_error` finding), so behaviour for genuinely broken
+  scopes / credentials is unchanged.
+
+### Changed
+- **Dashboard / Pipeline activity: "Data moved" tile now shows total
+  with daily-average as subtext.** The previous "Daily data movement"
+  headline divided the rolling-window total by the window length,
+  which read as continuous flow even when the only activity in the
+  window was a single burst (e.g. one 53 MB run \u2192 "8 MB / day").
+  The headline is now `total_moved_mb` (e.g. "53 MB"), and the
+  subtext shows `~ X MB / day avg \u00b7 N pipelines with data activity`
+  (or `no data-movement activity observed` when no pipeline reported
+  bytes). Also tightened MB rounding so values under 10 MB show one
+  decimal (7.57 \u2192 "7.6 MB" instead of "8 MB").
+
+### Fixed
+- **In-app Help: links to repo-root docs (`README.md`, `QUICKSTART.md`,
+  `CHANGELOG.md`, `SECURITY.md`) no longer 404.** Those four files are
+  now bundled into the SPA at build time as hidden chapters
+  (`/help/repo-readme`, `/help/repo-quickstart`,
+  `/help/repo-changelog`, `/help/repo-security`) and the markdown link
+  rewriter maps `../../FILE.md` (and any number of `../`) to the
+  matching in-app route. The files stay where they are at the repo
+  root; nothing was moved. Hidden chapters are reachable by direct
+  link but do not appear in the Help sidebar or the prev/next pager.
+
+## [2.1.0] - 2026-05-06
+
+**Minor release** — the user guide is now reachable from inside the SPA.
+No breaking changes. Existing CLI / JSON / CSV / Markdown / HTML
+deliverables are unchanged.
+
+### Added
+- **In-app user guide.** New `Help` page at `/help` (and `/help/<slug>`)
+  renders all 16 chapters of [`docs/user-guide/`](docs/user-guide/README.md)
+  inside the SPA. The chapters are bundled at build time via Vite's
+  `?raw` import — no API surface added, works identically in static
+  and control-plane mode, and a single source of truth (the same
+  Markdown files GitHub renders in the repo). Sidebar groups chapters
+  by section (Orientation / Read-only pages / Control-plane pages /
+  Reference) with prev / next pager links at the bottom of each chapter.
+- **"Help on this page" link** on every page (Dashboard, Code objects,
+  Recommendations, Runbook, Delta, Run, Runs history, Diff,
+  Configuration). A small `?` icon next to the page title links to the
+  matching user-guide chapter; deep-linking to `#anchors` inside a
+  chapter is supported.
+- Bundle adds `react-markdown`, `remark-gfm` and `rehype-slug`. Pulled
+  out into a separate `markdown-*.js` chunk so the rest of the SPA is
+  not penalised when the user never opens Help.
+- New SPA test (`web/src/__tests__/help.smoke.test.ts`) asserts every
+  chapter loads with a non-empty body and starts with a level-1
+  heading.
+
 ## [2.0.1] - 2026-05-05
 
 **Documentation patch.** No code changes.

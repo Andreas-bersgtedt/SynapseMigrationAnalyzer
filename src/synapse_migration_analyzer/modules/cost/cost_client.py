@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import logging
 import os
+import random
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Iterable
 
@@ -20,6 +22,47 @@ log = logging.getLogger(__name__)
 
 def _live_disabled() -> bool:
     return os.getenv("SMA_COST_DISABLE_LIVE", "").strip() in {"1", "true", "yes"}
+
+
+def _env_int(name: str, default: int, minimum: int = 0) -> int:
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        v = int(raw)
+    except ValueError:
+        return default
+    return max(minimum, v)
+
+
+def _retry_after_seconds(exc: Exception) -> float | None:
+    """Pull a Retry-After hint off an Azure SDK HttpResponseError, if any."""
+    resp = getattr(exc, "response", None)
+    headers = getattr(resp, "headers", None) if resp is not None else None
+    if not headers:
+        return None
+    try:
+        ra = headers.get("Retry-After") or headers.get("retry-after")
+    except Exception:  # noqa: BLE001
+        ra = None
+    if not ra:
+        return None
+    try:
+        return float(ra)
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_throttled(exc: Exception) -> bool:
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        resp = getattr(exc, "response", None)
+        status = getattr(resp, "status_code", None) if resp is not None else None
+    if status == 429 or (isinstance(status, int) and 500 <= status < 600):
+        return True
+    # Fall back to the message — Azure SDK occasionally surfaces the code in
+    # the formatted string only.
+    return "(429)" in str(exc) or "Too many requests" in str(exc)
 
 
 def default_window(months: int = 3) -> tuple[datetime, datetime]:
@@ -97,12 +140,42 @@ class CostClient:
             ),
         )
         try:
-            resp = client.query.usage(scope=scope, parameters=definition)
+            resp = self._call_with_retry(client, scope, definition)
         except Exception as exc:  # noqa: BLE001
             log.warning("CostManagement query.usage failed: %s", exc)
             raise
         rows = _parse_query_response(resp)
         return rows, ("ok" if rows else "empty_window")
+
+    def _call_with_retry(self, client, scope, definition):  # type: ignore[no-untyped-def]
+        """Invoke ``query.usage`` with bounded exponential backoff on 429/5xx.
+
+        Tunables (env vars):
+          * ``SMA_COST_RETRY_MAX``       — max attempts (default 5)
+          * ``SMA_COST_RETRY_BASE_MS``   — initial backoff (default 2000 ms)
+          * ``SMA_COST_RETRY_CAP_MS``    — max backoff per attempt (default 60000 ms)
+        """
+        max_attempts = _env_int("SMA_COST_RETRY_MAX", default=5, minimum=1)
+        base_ms = _env_int("SMA_COST_RETRY_BASE_MS", default=2000, minimum=100)
+        cap_ms = _env_int("SMA_COST_RETRY_CAP_MS", default=60_000, minimum=1000)
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return client.query.usage(scope=scope, parameters=definition)
+            except Exception as exc:  # noqa: BLE001
+                if attempt >= max_attempts or not _is_throttled(exc):
+                    raise
+                hint = _retry_after_seconds(exc)
+                if hint is not None:
+                    delay = min(hint, cap_ms / 1000.0)
+                else:
+                    backoff_ms = min(cap_ms, base_ms * (2 ** (attempt - 1)))
+                    # Full jitter (AWS-style).
+                    delay = random.uniform(0, backoff_ms) / 1000.0
+                log.warning(
+                    "CostManagement throttled (attempt %d/%d) — sleeping %.1fs: %s",
+                    attempt, max_attempts, delay, exc,
+                )
+                time.sleep(delay)
 
 
 def _parse_query_response(resp: object) -> list[MonthlyCostRow]:

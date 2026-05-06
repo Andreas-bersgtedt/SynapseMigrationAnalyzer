@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { apiGetDiff, apiListRuns, getRunIdFromHash, type RunMeta } from "../api/loader";
+import HelpLink from "../components/HelpLink";
 
 type DiffResponse = {
   base: string | null;
@@ -40,7 +41,7 @@ export default function RunDiff(): JSX.Element {
 
   return (
     <section className="page">
-      <h1>Run delta</h1>
+      <h1>Run delta <HelpLink slug="11-diff-page" /></h1>
       <div className="actions">
         <label>
           <span>Head</span>{" "}
