@@ -490,6 +490,10 @@ if ($NoServe) {
     Write-Host ""
     Write-Host "Not launching 'sma serve' because 'sma doctor --offline' reported issues." -ForegroundColor Yellow
     Write-Host "Fix the issues above, then run: sma serve --with-api --static-dir web\dist" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Step "Launching 'sma serve --with-api --static-dir web\dist' (Ctrl+C to stop)"
+    Write-Host "    open http://127.0.0.1:8000 in your browser." -ForegroundColor Green
+    sma serve --with-api --static-dir 'web\dist'
 } elseif (-not (Test-Path (Join-Path $webDist 'index.html'))) {
     Write-Host ""
     Write-Host "Not launching 'sma serve' because '$webDist\index.html' is missing." -ForegroundColor Yellow
