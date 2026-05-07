@@ -106,6 +106,22 @@ class PipelineRunWindowStats(BaseModel):
     p95_duration_ms: float | None = None
     avg_data_moved_mb_per_run: float | None = None  # over runs that performed data movement
     total_data_moved_mb: float | None = None        # None when pipeline has no data-movement activities
+    # Azure-IR Data Integration Units consumed (sum of billableDuration[].duration
+    # in DIUHours across all data-movement activity runs in the window).
+    avg_diu_hours_per_run: float | None = None
+    total_diu_hours: float | None = None
+    # Heuristic Fabric CU-hours equivalent for the consumed DIU-hours
+    # (= total_diu_hours * DIU_TO_CU_HOURS, default 1.5). None when no DIU
+    # billing was observed for the pipeline in this window.
+    est_cu_hours_from_diu: float | None = None
+    # Data Orchestration: Microsoft charges 0.0056 CU-hours per non-copy
+    # activity run (Fabric capacity meters). We estimate the count of
+    # non-copy activity runs as (static non-copy activity count in pipeline
+    # definition) * (pipeline run_count in window). This ignores ForEach /
+    # Until / If branches that may execute the same activity multiple times
+    # or skip it, so it is a baseline approximation.
+    est_non_copy_activity_runs: int = 0
+    est_cu_hours_from_orchestration: float = 0.0
 
 
 class PipelineRunStats(BaseModel):

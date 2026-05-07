@@ -21,7 +21,20 @@ contain data-movement activities):
     - ``activity_type``     : str   (``"Copy"`` | ``"ExecuteDataFlow"`` | ``"Lookup"`` | ...)
     - ``status``            : str
     - ``output``            : dict  (Copy: ``dataRead`` / ``dataWritten`` in bytes;
-                                       Dataflow: ``bytesProcessed`` or ``runStatus.metrics``)
+                                       Dataflow: ``bytesProcessed`` or ``runStatus.metrics``;
+                                       Azure-IR billing: ``billingReference.billableDuration[]``
+                                       with ``unit == "DIUHours"``)
+
+DIU-hours → Fabric CU-hours
+---------------------------
+
+When a Copy / Mapping Data Flow activity reports Azure-IR billing, the
+aggregator sums ``billableDuration[].duration`` across all activity runs of a
+pipeline (only for entries with ``unit == "DIUHours"``) and projects an
+equivalent Fabric CU-hours figure via :data:`DIU_TO_CU_HOURS` (default 1.5).
+This is a *heuristic* placeholder — Microsoft does not publish a fixed
+DIU→CU multiplier; verify with the current Fabric capacity sizing
+guidance before quoting the number to customers.
 """
 from __future__ import annotations
 
@@ -45,6 +58,22 @@ DATA_MOVEMENT_ACTIVITY_TYPES: frozenset[str] = frozenset({
     "Lookup",
 })
 
+# Heuristic: 1 Azure-IR DIU-hour ≈ 1.5 Fabric CU-hours. See module docstring
+# for caveats — this is a placeholder, not a Microsoft-published constant.
+DIU_TO_CU_HOURS: float = 1.5
+
+# Microsoft-published Fabric Pipelines meter rate for the Data Orchestration
+# engine type: 0.0056 CU-hours per non-copy activity run. (Copy activity is
+# billed under the Data Movement meter via DIU-hours.) Source: Fabric Updates
+# Blog "Announcing Fabric Capacities — everything you need to know" (Hoang &
+# Schacht, 2024) and Microsoft Learn "Fabric data factory pricing" tables.
+ORCHESTRATION_CU_HOURS_PER_ACTIVITY: float = 0.0056
+
+# Activity types billed under the Data Movement meter (DIU-hours), NOT the
+# Data Orchestration meter. We exclude these when counting orchestration
+# activity runs to avoid double-counting.
+_DATA_MOVEMENT_BILLED_TYPES: frozenset[str] = frozenset({"copy"})
+
 _TERMINAL_SUCCESS = {"succeeded"}
 _TERMINAL_FAILURE = {"failed"}
 
@@ -57,6 +86,13 @@ class _RunBucket:
     other: int = 0
     durations_ms: list[float] = field(default_factory=list)
     data_bytes: list[int] = field(default_factory=list)  # per-run total bytes (only when >0 / known)
+    diu_hours: list[float] = field(default_factory=list)  # per-run total DIU-hours (only when reported)
+    # Non-copy activity run counts. ``observed_non_copy`` accumulates exact
+    # counts from runs we sampled activity-runs for; ``unsampled_runs`` is
+    # the count of runs in this window we did *not* fetch activity-runs for
+    # (so the aggregator can apply the static-count fallback for them).
+    observed_non_copy: int = 0
+    unsampled_runs: int = 0
 
 
 def _coerce_datetime(value: Any) -> datetime | None:
@@ -94,6 +130,66 @@ def _safe_int(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return n if n >= 0 else None
+
+
+def _safe_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    if f < 0 or f != f:  # reject negatives and NaN
+        return None
+    return f
+
+
+def extract_diu_hours(activity_run: dict[str, Any]) -> float | None:
+    """Best-effort extraction of Data Integration Units consumed by an activity run.
+
+    Synapse / ADF Copy and Mapping Data Flow activities running on the Azure
+    Integration Runtime expose billing in ``output.billingReference``::
+
+        {
+          "billingReference": {
+            "activityType": "ExternalActivity",
+            "billableDuration": [
+              { "meterType": "AzureIR", "duration": 0.066, "unit": "DIUHours" }
+            ]
+          }
+        }
+
+    Returns the sum of ``duration`` across all billable-duration entries with
+    ``unit == "DIUHours"``. Returns ``None`` when no DIU-hour entry is present
+    (so callers can distinguish "not reported" from "0.0 DIU-hours").
+    """
+    output = activity_run.get("output")
+    if not isinstance(output, dict):
+        return None
+    billing = output.get("billingReference")
+    if not isinstance(billing, dict):
+        return None
+    entries = billing.get("billableDuration")
+    # Some payloads wrap the single entry in a dict instead of a list — normalize.
+    if isinstance(entries, dict):
+        entries = [entries]
+    if not isinstance(entries, list):
+        return None
+
+    total: float = 0.0
+    seen = False
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        unit = (entry.get("unit") or "").strip().lower()
+        if unit != "diuhours":
+            continue
+        duration = _safe_float(entry.get("duration"))
+        if duration is None:
+            continue
+        total += duration
+        seen = True
+    return total if seen else None
 
 
 def extract_data_bytes(activity_run: dict[str, Any]) -> int | None:
@@ -148,6 +244,7 @@ def aggregate_runs(
     pipelines_with_data_movement: set[str],
     runs: Iterable[dict[str, Any]],
     activity_runs_by_run_id: dict[str, list[dict[str, Any]]] | None = None,
+    non_copy_activity_counts: dict[str, int] | None = None,
     now: datetime | None = None,
     windows_days: tuple[int, ...] = RUN_STATS_WINDOWS_DAYS,
 ) -> list[PipelineRunStats]:
@@ -161,6 +258,7 @@ def aggregate_runs(
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
     activity_runs_by_run_id = activity_runs_by_run_id or {}
+    non_copy_activity_counts = non_copy_activity_counts or {}
 
     # Pre-compute window cutoffs so each run is bucketed in O(W).
     sorted_windows = sorted(windows_days)
@@ -192,15 +290,26 @@ def aggregate_runs(
         if prev is None or end_dt > prev[0]:
             last_run[pname] = (end_dt, status or None)
 
-        # Sum data bytes from activity runs (Copy/Dataflow). None → unknown.
+        # Sum data bytes + DIU-hours from activity runs. None → unknown.
         run_id = run.get("run_id")
         bytes_for_run: int | None = None
-        if run_id and pname in pipelines_with_data_movement:
-            for ar in activity_runs_by_run_id.get(run_id, []):
-                b = extract_data_bytes(ar)
-                if b is None:
-                    continue
-                bytes_for_run = (bytes_for_run or 0) + b
+        diu_for_run: float | None = None
+        non_copy_for_run: int | None = None
+        sampled = bool(run_id and run_id in activity_runs_by_run_id)
+        if sampled:
+            ars = activity_runs_by_run_id[run_id]
+            non_copy_for_run = 0
+            for ar in ars:
+                if pname in pipelines_with_data_movement:
+                    b = extract_data_bytes(ar)
+                    if b is not None:
+                        bytes_for_run = (bytes_for_run or 0) + b
+                    d = extract_diu_hours(ar)
+                    if d is not None:
+                        diu_for_run = (diu_for_run or 0.0) + d
+                a_type = (ar.get("activity_type") or "").strip().lower()
+                if a_type and a_type not in _DATA_MOVEMENT_BILLED_TYPES:
+                    non_copy_for_run += 1
 
         for w, cutoff in cutoffs:
             if end_dt < cutoff:
@@ -217,6 +326,12 @@ def aggregate_runs(
                 bucket.durations_ms.append(duration_f)
             if bytes_for_run is not None:
                 bucket.data_bytes.append(bytes_for_run)
+            if diu_for_run is not None:
+                bucket.diu_hours.append(diu_for_run)
+            if sampled and non_copy_for_run is not None:
+                bucket.observed_non_copy += non_copy_for_run
+            else:
+                bucket.unsampled_runs += 1
 
     # Materialize results, including zero rows for pipelines with no runs.
     out: list[PipelineRunStats] = []
@@ -244,6 +359,28 @@ def aggregate_runs(
                     total_mb = 0.0 if b.count == 0 else None
                     avg_mb_per_run = None
 
+            avg_diu_per_run: float | None = None
+            total_diu: float | None = None
+            est_cu_hours: float | None = None
+            if has_dm:
+                if b.diu_hours:
+                    total_diu = sum(b.diu_hours)
+                    avg_diu_per_run = total_diu / len(b.diu_hours)
+                    est_cu_hours = total_diu * DIU_TO_CU_HOURS
+                else:
+                    total_diu = 0.0 if b.count == 0 else None
+                    avg_diu_per_run = None
+                    est_cu_hours = 0.0 if b.count == 0 else None
+
+            # Data Orchestration meter: 0.0056 CU-hr per non-copy activity
+            # run. Use observed counts from sampled activity-runs (which
+            # naturally include ForEach / Until / If fan-out) and fall back
+            # to (static non-copy count × unsampled run count) for runs we
+            # did not fetch activity-runs for.
+            non_copy_per_run_static = max(0, int(non_copy_activity_counts.get(pname, 0)))
+            est_orch_runs = b.observed_non_copy + non_copy_per_run_static * b.unsampled_runs
+            est_orch_cu_hours = est_orch_runs * ORCHESTRATION_CU_HOURS_PER_ACTIVITY
+
             windows.append(PipelineRunWindowStats(
                 window_days=w,
                 run_count=b.count,
@@ -255,6 +392,11 @@ def aggregate_runs(
                 p95_duration_ms=p95,
                 avg_data_moved_mb_per_run=avg_mb_per_run,
                 total_data_moved_mb=total_mb,
+                avg_diu_hours_per_run=avg_diu_per_run,
+                total_diu_hours=total_diu,
+                est_cu_hours_from_diu=est_cu_hours,
+                est_non_copy_activity_runs=est_orch_runs,
+                est_cu_hours_from_orchestration=est_orch_cu_hours,
             ))
 
         last = last_run.get(pname)
@@ -278,3 +420,22 @@ def pipelines_with_data_movement(activities: Iterable[dict[str, Any]]) -> set[st
             if pname:
                 out.add(pname)
     return out
+
+
+def non_copy_activity_counts(activities: Iterable[dict[str, Any]]) -> dict[str, int]:
+    """Count non-Copy activities per pipeline (for orchestration CU estimation).
+
+    Microsoft's Fabric pipelines meter charges 0.0056 CU-hr per non-copy
+    activity *run*. We approximate runs as (this count) * (pipeline run
+    count in window).
+    """
+    counts: dict[str, int] = defaultdict(int)
+    for a in activities:
+        pname = a.get("pipeline")
+        if not pname:
+            continue
+        a_type = (a.get("type") or "").strip().lower()
+        if a_type in _DATA_MOVEMENT_BILLED_TYPES:
+            continue
+        counts[pname] += 1
+    return dict(counts)

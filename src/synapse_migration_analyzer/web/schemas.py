@@ -114,6 +114,7 @@ class ConfigCheck(BaseModel):
     name: str
     ok: bool
     detail: str | None = None
+    category: str | None = None
 
 
 class ValidateConfigResponse(BaseModel):

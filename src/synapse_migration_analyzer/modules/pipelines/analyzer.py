@@ -116,9 +116,8 @@ class PipelinesAnalyzer:
         run_limit = _env_int("SMA_PIPELINES_RUN_LIMIT", default=5000, minimum=1)
         fetch_activity_runs = _env_flag("SMA_PIPELINES_ACTIVITY_RUNS", default=True)
         # Sampling cap: per-pipeline upper bound on how many terminal runs we
-        # actually fetch activity-runs for. The downstream stats only use the
-        # *average* MB/run per pipeline-window, so a sample is enough — set
-        # to 0 to disable the cap (back to old behaviour).
+        # actually fetch activity-runs for. The aggregator only needs a
+        # *sample* to derive averages — set to 0 to disable the cap.
         ar_sample_per_pipeline = _env_int(
             "SMA_PIPELINES_ACTIVITY_RUN_SAMPLE", default=50, minimum=0,
         )
@@ -149,18 +148,20 @@ class PipelinesAnalyzer:
         )
 
         # Decide which runs to query activity-runs for. Only terminal
-        # (succeeded/failed) runs of pipelines in ``dm_set`` are candidates;
-        # in-progress runs would skew metrics anyway. Within each pipeline we
-        # take the most recent ``ar_sample_per_pipeline`` runs (sorted by
-        # ``run_end`` desc) to bound the REST work on busy workspaces.
+        # (succeeded/failed) runs are candidates; in-progress runs would skew
+        # metrics. We fetch for *all* pipelines (not just data-movement ones)
+        # so the orchestration meter can count actual non-copy activity runs
+        # — including ForEach/Until fan-out — instead of relying on the static
+        # activity-count multiplier. Within each pipeline we take the most
+        # recent ``ar_sample_per_pipeline`` runs (sorted by ``run_end`` desc).
         activity_runs_by_run_id: dict[str, list[dict]] = {}
-        if fetch_activity_runs and dm_set and runs:
+        if fetch_activity_runs and runs:
             candidates_by_pipeline: dict[str, list[dict]] = defaultdict(list)
             for run in runs:
                 pname = run.get("pipeline_name")
                 run_id = run.get("run_id")
                 status = (run.get("status") or "").lower()
-                if not (pname and run_id) or pname not in dm_set:
+                if not (pname and run_id):
                     continue
                 if status not in ("succeeded", "failed"):
                     continue
@@ -223,6 +224,9 @@ class PipelinesAnalyzer:
             pipelines_with_data_movement=dm_set,
             runs=runs,
             activity_runs_by_run_id=activity_runs_by_run_id,
+            non_copy_activity_counts=run_stats.non_copy_activity_counts(
+                [a.model_dump() for a in result.activities]
+            ),
             now=end,
         )
         return history

@@ -481,19 +481,63 @@ Write-Host "        Edit '$targetEnv' before running 'sma analyze-*'."          
 # --- Launch the local control plane ----------------------------------------
 # When everything is healthy, hand the user a running web UI on
 # http://127.0.0.1:8000 instead of asking them to type one more command.
+#
+# On first launch we always send the browser to the Configuration tab so the
+# user can fill in / review the .env-derived settings before kicking off a
+# run. We pass --no-browser to `sma serve` (which would otherwise open the
+# dashboard at /) and open /configuration ourselves from a background job
+# once the port starts accepting connections.
 $webDist = Join-Path $repoDir 'web\dist'
+$serveHost = '127.0.0.1'
+$servePort = 8000
+$configUrl = "http://${serveHost}:${servePort}/configuration"
+
+function Start-ConfigurationTabOpener {
+    param(
+        [Parameter(Mandatory)][string]$TargetHost,
+        [Parameter(Mandatory)][int]$TargetPort,
+        [Parameter(Mandatory)][string]$Url,
+        [int]$TimeoutSeconds = 30
+    )
+    # Background job that polls the loopback port and then launches the
+    # default browser at the Configuration tab. Runs out-of-process so the
+    # foreground `sma serve` invocation can keep owning the console.
+    Start-Job -Name 'sma-open-configuration' -ScriptBlock {
+        param($h, $p, $u, $timeout)
+        $deadline = (Get-Date).AddSeconds($timeout)
+        while ((Get-Date) -lt $deadline) {
+            try {
+                $client = New-Object System.Net.Sockets.TcpClient
+                $iar = $client.BeginConnect($h, $p, $null, $null)
+                if ($iar.AsyncWaitHandle.WaitOne(500) -and $client.Connected) {
+                    $client.EndConnect($iar) | Out-Null
+                    $client.Close()
+                    Start-Sleep -Milliseconds 250
+                    Start-Process $u | Out-Null
+                    return
+                }
+                $client.Close()
+            } catch {
+                # Port not ready yet; keep polling.
+            }
+            Start-Sleep -Milliseconds 250
+        }
+    } -ArgumentList $TargetHost, $TargetPort, $Url, $TimeoutSeconds | Out-Null
+}
+
 if ($NoServe) {
     Write-Host ""
     Write-Host "Skipping 'sma serve' launch (-NoServe)." -ForegroundColor DarkGray
     Write-Host "Start it manually with: sma serve --with-api --static-dir web\dist" -ForegroundColor DarkGray
 } elseif (-not $doctorOk) {
     Write-Host ""
-    Write-Host "Not launching 'sma serve' because 'sma doctor --offline' reported issues." -ForegroundColor Yellow
-    Write-Host "Fix the issues above, then run: sma serve --with-api --static-dir web\dist" -ForegroundColor Yellow
+    Write-Host "'sma doctor --offline' reported issues." -ForegroundColor Yellow
+    Write-Host "Review the .env configuration." -ForegroundColor Yellow
     Write-Host ""
     Write-Step "Launching 'sma serve --with-api --static-dir web\dist' (Ctrl+C to stop)"
-    Write-Host "    open http://127.0.0.1:8000 in your browser." -ForegroundColor Green
-    sma serve --with-api --static-dir 'web\dist'
+    Write-Host "    opening $configUrl in your browser." -ForegroundColor Green
+    Start-ConfigurationTabOpener -TargetHost $serveHost -TargetPort $servePort -Url $configUrl
+    sma serve --with-api --static-dir 'web\dist' --host $serveHost --port $servePort --no-browser
 } elseif (-not (Test-Path (Join-Path $webDist 'index.html'))) {
     Write-Host ""
     Write-Host "Not launching 'sma serve' because '$webDist\index.html' is missing." -ForegroundColor Yellow
@@ -502,6 +546,7 @@ if ($NoServe) {
 } else {
     Write-Host ""
     Write-Step "Launching 'sma serve --with-api --static-dir web\dist' (Ctrl+C to stop)"
-    Write-Host "    open http://127.0.0.1:8000 in your browser." -ForegroundColor Green
-    sma serve --with-api --static-dir 'web\dist'
+    Write-Host "    opening $configUrl in your browser." -ForegroundColor Green
+    Start-ConfigurationTabOpener -TargetHost $serveHost -TargetPort $servePort -Url $configUrl
+    sma serve --with-api --static-dir 'web\dist' --host $serveHost --port $servePort --no-browser
 }

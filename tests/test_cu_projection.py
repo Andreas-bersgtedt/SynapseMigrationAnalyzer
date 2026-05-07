@@ -25,6 +25,7 @@ def test_picks_smallest_sku_covering_peak():
     ]
     proj = cu_projection.project_capacity(series, headroom_pct=30)
     assert proj is not None
-    # peak active DWU = 1000 * 0.8 = 800. With 30% headroom → 1040. *0.7 → 728 CU.
+    # peak active DWU = 1000 * 0.8 = 800. With 30% headroom → 1040. *0.020 → 20.8 CU.
+    # Smallest F-SKU covering 20.8 CU is F32.
     assert proj.peak_dwu == 800.0
-    assert proj.recommended_sku in {"F1024", "F2048"}
+    assert proj.recommended_sku == "F32"

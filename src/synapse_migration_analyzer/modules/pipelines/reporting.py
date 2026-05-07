@@ -37,6 +37,8 @@ def _write_run_history_csvs(result: PipelinesAnalysis, out_dir: Path) -> list[Pa
         "window_days", "run_count", "succeeded", "failed", "other",
         "success_rate", "avg_duration_ms", "p95_duration_ms",
         "avg_data_moved_mb_per_run", "total_data_moved_mb",
+        "avg_diu_hours_per_run", "total_diu_hours", "est_cu_hours_from_diu",
+        "est_non_copy_activity_runs", "est_cu_hours_from_orchestration",
     ]
     with detail_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fields)
@@ -64,6 +66,20 @@ def _write_run_history_csvs(result: PipelinesAnalysis, out_dir: Path) -> list[Pa
                         "" if w.total_data_moved_mb is None
                         else f"{w.total_data_moved_mb:.2f}"
                     ),
+                    "avg_diu_hours_per_run": (
+                        "" if w.avg_diu_hours_per_run is None
+                        else f"{w.avg_diu_hours_per_run:.4f}"
+                    ),
+                    "total_diu_hours": (
+                        "" if w.total_diu_hours is None
+                        else f"{w.total_diu_hours:.4f}"
+                    ),
+                    "est_cu_hours_from_diu": (
+                        "" if w.est_cu_hours_from_diu is None
+                        else f"{w.est_cu_hours_from_diu:.4f}"
+                    ),
+                    "est_non_copy_activity_runs": w.est_non_copy_activity_runs,
+                    "est_cu_hours_from_orchestration": f"{w.est_cu_hours_from_orchestration:.4f}",
                 })
 
     # Per-pipeline headline (pick the 28-day window when available).
@@ -72,6 +88,8 @@ def _write_run_history_csvs(result: PipelinesAnalysis, out_dir: Path) -> list[Pa
         "pipeline", "has_data_movement", "last_run_at", "last_run_status",
         "headline_window_days", "run_count", "succeeded", "failed",
         "success_rate", "avg_duration_ms", "avg_data_moved_mb_per_run",
+        "total_diu_hours", "est_cu_hours_from_diu",
+        "est_non_copy_activity_runs", "est_cu_hours_from_orchestration",
     ]
     with summary_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=summary_fields)
@@ -98,6 +116,16 @@ def _write_run_history_csvs(result: PipelinesAnalysis, out_dir: Path) -> list[Pa
                     "" if headline.avg_data_moved_mb_per_run is None
                     else f"{headline.avg_data_moved_mb_per_run:.2f}"
                 ),
+                "total_diu_hours": (
+                    "" if headline.total_diu_hours is None
+                    else f"{headline.total_diu_hours:.4f}"
+                ),
+                "est_cu_hours_from_diu": (
+                    "" if headline.est_cu_hours_from_diu is None
+                    else f"{headline.est_cu_hours_from_diu:.4f}"
+                ),
+                "est_non_copy_activity_runs": headline.est_non_copy_activity_runs,
+                "est_cu_hours_from_orchestration": f"{headline.est_cu_hours_from_orchestration:.4f}",
             })
     return [detail_path, summary_path]
 

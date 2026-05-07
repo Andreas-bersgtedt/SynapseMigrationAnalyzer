@@ -19,8 +19,11 @@ Reads from and writes to `./.env` in the working directory of the
 
 - `GET /api/config` — current effective values (with secrets redacted).
 - `PUT /api/config` — persist edits.
-- `POST /api/config/validate` — run pre-flight checks (auth, ODBC,
-  workspace reachability).
+- `POST /api/config/validate` — field-only checks (env vars present,
+  GUIDs well-formed, output dir writable). Instant.
+- `POST /api/config/validate?live=true` — field checks **plus** live
+  Azure + Synapse connectivity tests using the saved service
+  principal. Takes a few seconds.
 
 ## Layout
 
@@ -39,18 +42,25 @@ Azure
 SQL
   ODBC driver          [ ODBC Driver 18 for SQL Server         ]
 
-[ Save ]    [ Validate ]
+[ Save ]    [ Validate (fields) ]    [ Validate access (live) ]
 
 Validation
-┌────────────────────────────────────────┬──────────┐
-│ Check                                  │ Result   │
-├────────────────────────────────────────┼──────────┤
-│ azure.auth                             │ ● OK     │
-│ azure.subscription_reachable           │ ● OK     │
-│ azure.workspace_reachable              │ ● OK     │
-│ sql.odbc_driver_installed              │ ● OK     │
-│ sql.dedicated_pool_reachable           │ ● FAIL — login timeout │
-└────────────────────────────────────────┴──────────┘
+  Configuration
+    ● OK    .env file present
+    ● OK    AZURE_TENANT_ID
+    ● OK    AZURE_CLIENT_ID
+    ● OK    AZURE_SUBSCRIPTION_ID
+    ● OK    AZURE_CLIENT_SECRET — set
+    ● OK    output_dir writable
+  Control plane
+    ● OK    AAD token (ARM)
+    ● OK    Synapse workspace (ARM Reader) — syn-prod-eu in westeurope
+  Data plane
+    ● OK    Synapse Artifacts (Synapse Artifact User)
+    ● OK    AAD token (SQL)
+    ● OK    Serverless SQL SELECT 1 (syn-prod-eu-ondemand.sql.azuresynapse.net)
+    ● FAIL  Dedicated SQL SELECT 1 (syn-prod-eu.sql.azuresynapse.net / dwpool01)
+            — Login failed for user '<token-identified principal>'.
 ```
 
 ## Field reference
@@ -75,27 +85,39 @@ Validation
 
 ### Buttons
 
-| Button         | Effect |
-| -------------- | ------ |
-| **Save**       | Posts the form to `/api/config`. The server updates `./.env` atomically and reloads the in-process settings. |
-| **Validate**   | Runs the same checks as `sma doctor` plus a workspace reachability probe. Returns within seconds. |
+| Button                       | Effect |
+| ---------------------------- | ------ |
+| **Save**                     | Posts the form to `/api/config`. The server updates `./.env` atomically and reloads the in-process settings. |
+| **Validate (fields)**        | Field/format only: env vars present, GUIDs well-formed, output dir writable. Instant. |
+| **Validate access (live)**   | Field checks **plus** live connectivity using the saved service principal. Tests Azure ARM (token + `workspaces.get`) and the Synapse data plane (Artifacts REST + `SELECT 1` against the serverless and — when `SYNAPSE_DEDICATED_POOL` is set — the dedicated SQL endpoint). Takes a few seconds. Use this to confirm both **Azure RBAC** and **Synapse data-plane RBAC** are in place before kicking off a run. |
 
 ### Validation results
 
-Each check is a row with a status pill:
+Each check is a row with a status pill, grouped by **category**:
+
+- **Configuration** — local checks against `./.env`.
+- **Control plane** — Azure ARM + Synapse management API.
+- **Data plane** — Synapse Artifacts REST + SQL endpoints.
+
+Result states:
 
 - ● **OK** — green.
-- ● **FAIL** — red, sub-text shows the error message.
+- ● **FAIL** — red. The sub-text contains the underlying error
+  message verbatim (e.g. `Login failed for user '<token-identified
+  principal>'`, `(403) AuthorizationFailed`, ODBC `IM002` driver
+  missing, etc.). Use this to pinpoint the missing role assignment or
+  driver.
 
-Common checks:
+Live checks performed (when **Validate access (live)** is clicked):
 
-- `azure.auth` — service principal can obtain a token.
-- `azure.subscription_reachable` — Resource Manager call succeeds.
-- `azure.workspace_reachable` — Synapse REST API responds.
-- `sql.odbc_driver_installed` — the named driver is registered on the
-  host.
-- `sql.dedicated_pool_reachable` — TCP connect + login to the pool's
-  SQL endpoint.
+| Category       | Check                                | Confirms |
+| -------------- | ------------------------------------ | -------- |
+| Control plane  | `AAD token (ARM)`                    | Service-principal credentials are valid for `management.azure.com`. |
+| Control plane  | `Synapse workspace (ARM Reader)`     | The SP has at least Reader on the Synapse workspace resource. |
+| Data plane     | `Synapse Artifacts (Synapse Artifact User)` | The SP can list pipelines via the workspace dev endpoint. |
+| Data plane     | `AAD token (SQL)`                    | A token can be issued for `database.windows.net`. |
+| Data plane     | `Serverless SQL SELECT 1 (...)`      | TCP + login + query on the built-in serverless endpoint. |
+| Data plane     | `Dedicated SQL SELECT 1 (...)`       | Same against the dedicated pool — only when `SYNAPSE_DEDICATED_POOL` is set. |
 
 ## Common tasks
 
@@ -103,15 +125,22 @@ Common checks:
 
 1. Fill in **Tenant**, **Client**, **Client secret**, **Subscription**,
    **Resource group**, **Workspace name**.
-2. Click **Save**, then **Validate**.
-3. When all checks are green, go to [09. Run page](09-run-page.md) and
-   start a run.
+2. Click **Save**, then **Validate access (live)**.
+3. When every row under **Control plane** and **Data plane** is green,
+   go to [09. Run page](09-run-page.md) and start a run.
+4. If a Data-plane check fails with `Login failed for user '<token-identified
+   principal>'`, the SP needs to be added as a Synapse SQL login. For
+   the serverless endpoint a single `CREATE LOGIN [<sp-name>] FROM
+   EXTERNAL PROVIDER; CREATE USER [<sp-name>] FOR LOGIN [<sp-name>];`
+   in `master` is usually enough; for the dedicated pool repeat the
+   `CREATE USER` in the pool database and grant the appropriate role
+   (e.g. `db_datareader`).
 
 ### "Rotate the client secret"
 
 1. Generate the new secret in Azure AD.
 2. Paste it into **Client secret**.
-3. **Save** → **Validate**.
+3. **Save** → **Validate access (live)**.
 
 The page never displays the existing secret — leave the field empty
 on a Save if you only changed other fields.

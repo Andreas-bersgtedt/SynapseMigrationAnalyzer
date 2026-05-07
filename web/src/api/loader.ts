@@ -24,6 +24,7 @@ import type {
   PipelinesReport,
   RunDelta,
   SecurityReport,
+  ServerlessReport,
   StorageReport,
 } from "../types";
 
@@ -143,6 +144,8 @@ export const loadStorage = () => fetchJson<StorageReport>("storage.json");
 
 export const loadPipelines = () => fetchJson<PipelinesReport>("pipelines.json");
 
+export const loadServerless = () => fetchJson<ServerlessReport>("serverless_pools.json");
+
 export const loadCost = () => fetchJson<CostReport>("cost.json");
 
 export const loadGovernance = () => fetchJson<GovernanceReport>("governance.json");
@@ -192,7 +195,7 @@ export type AppConfig = {
   env_file_exists: boolean;
 };
 
-export type ConfigCheck = { name: string; ok: boolean; detail: string | null };
+export type ConfigCheck = { name: string; ok: boolean; detail: string | null; category?: string | null };
 export type ValidateResponse = { ok: boolean; checks: ConfigCheck[] };
 
 export async function apiListRuns(limit = 50): Promise<RunMeta[]> {
@@ -248,8 +251,9 @@ export async function apiPutConfig(update: unknown): Promise<{ saved_to: string;
   return r.json();
 }
 
-export async function apiValidateConfig(): Promise<ValidateResponse> {
-  const r = await fetch("/api/config/validate", { method: "POST", headers: API_HEADERS });
+export async function apiValidateConfig(opts: { live?: boolean } = {}): Promise<ValidateResponse> {
+  const qs = opts.live ? "?live=true" : "";
+  const r = await fetch(`/api/config/validate${qs}`, { method: "POST", headers: API_HEADERS });
   if (!r.ok) throw new Error(`POST /api/config/validate: HTTP ${r.status}`);
   return r.json() as Promise<ValidateResponse>;
 }

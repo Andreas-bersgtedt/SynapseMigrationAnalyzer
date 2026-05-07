@@ -244,6 +244,16 @@ export interface PipelineRunWindowStats {
   p95_duration_ms?: number | null;
   avg_data_moved_mb_per_run?: number | null;
   total_data_moved_mb?: number | null;
+  // Azure-IR Data Integration Units consumed in the window (sum of
+  // billableDuration[].duration entries with unit "DIUHours").
+  avg_diu_hours_per_run?: number | null;
+  total_diu_hours?: number | null;
+  // Heuristic Fabric CU-hours equivalent (= total_diu_hours * 1.5).
+  est_cu_hours_from_diu?: number | null;
+  // Data Orchestration meter (Microsoft-published 0.0056 CU-hr per non-copy
+  // activity run). Estimated as static non-copy activity count × pipeline runs.
+  est_non_copy_activity_runs?: number;
+  est_cu_hours_from_orchestration?: number;
 }
 
 export interface PipelineRunStats {
@@ -268,6 +278,35 @@ export interface PipelinesReport {
   generated_at: string;
   pipelines: Array<{ name: string; activity_count?: number }>;
   run_history?: PipelineRunHistory | null;
+  errors?: string[];
+}
+
+// ---------------------------------------------------------------------------
+// serverless_pools.json
+// ---------------------------------------------------------------------------
+
+export interface ServerlessDailyUsage {
+  day: string;                  // "YYYY-MM-DD" (UTC)
+  request_count: number;
+  data_processed_mb: number;
+}
+
+export interface ServerlessCostEstimate {
+  window_days: number;
+  total_data_processed_tb: number;
+  list_price_usd_per_tb: number;
+  estimated_cost_usd: number;
+  notes?: string | null;
+}
+
+export interface ServerlessReport {
+  workspace_name?: string | null;
+  endpoint_fqdn?: string | null;
+  generated_at: string;
+  databases?: Array<{ name: string }>;
+  external_tables?: Array<unknown>;
+  daily_usage?: ServerlessDailyUsage[];
+  cost_estimate?: ServerlessCostEstimate | null;
   errors?: string[];
 }
 

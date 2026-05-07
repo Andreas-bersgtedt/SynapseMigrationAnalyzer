@@ -17,11 +17,12 @@ workspace, today?" If you only have time for one page, it is this one.
 | Headline / blockers / inputs | `fabric_mapping.json` | `fabric_mapping` |
 | Storage          | `storage.json`         | `storage`       |
 | Pipeline activity | `pipelines.json`      | `pipelines`     |
+| Serverless SQL   | `serverless_pools.json` | `serverless_pools` |
 
-The Storage and Pipeline-activity sections render only when their
-respective JSON files exist for the selected run. The headline cards
-require `fabric_mapping.json` — without it the page shows *Loading…*
-forever.
+The Storage, Pipeline-activity and Serverless SQL sections render only
+when their respective JSON files exist for the selected run. The
+headline cards require `fabric_mapping.json` — without it the page
+shows *Loading…* forever.
 
 ## Layout
 
@@ -102,6 +103,27 @@ Top-10 table columns: pipeline name, runs/day (`run_count / 7`),
 succeeded count, failed count, average data moved per run, total data
 moved in the window, and a last-run timestamp + status pill.
 
+### Serverless SQL section
+
+Reads `serverless_pools.json`. When `daily_usage` is non-empty:
+
+| Stat card                  | Source                                                 |
+| -------------------------- | ------------------------------------------------------ |
+| **Avg daily queries**      | `Σ daily_usage[*].request_count / N` (N = days observed) |
+| **Total data scanned**     | `Σ daily_usage[*].data_processed_mb`                  |
+| **Avg query data size**    | `total_data_scanned / total_requests`                  |
+| **Estimated cost**         | `cost_estimate.estimated_cost_usd` (sub-text shows TB scanned and the list price per TB) |
+
+Below the cards an inline-SVG **clustered bar chart** plots the last 7
+days — one bar per day for queries (left axis, blue) and one for MB
+scanned (right axis, orange). Hover a bar for the exact daily value.
+
+When `daily_usage` is empty, the section instead shows database and
+external-table counts plus a hint: `sys.dm_exec_requests_history` only
+returns queries submitted by the calling principal unless the SP holds
+`VIEW SERVER STATE` (or is a Synapse SQL admin). Grant that permission
+and re-run `sma analyze-serverless-pools` to populate the chart.
+
 ### Inputs analyzed
 
 Lists every module that contributed to the aggregation, the source
@@ -137,8 +159,11 @@ analyzer also surfaces a recommendation for it (see
 - *Loading…* — `fabric_mapping.json` is being fetched.
 - *No fabric_mapping data* — file is missing. Run
   `sma analyze-all` or `sma map-to-fabric`.
-- The Storage / Pipeline-activity sections silently disappear when
-  their JSON is absent or the corresponding arrays are empty.
+- The Storage / Pipeline-activity / Serverless SQL sections silently
+  disappear when their JSON is absent or the corresponding arrays are
+  empty (Serverless SQL only hides when there are no databases, no
+  external tables **and** no `daily_usage` rows — a partially-populated
+  report still renders the inventory tiles plus the permissions hint).
 
 ## Related
 

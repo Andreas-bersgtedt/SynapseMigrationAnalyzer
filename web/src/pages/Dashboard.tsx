@@ -1,4 +1,4 @@
-import { loadFabricMapping, loadPipelines, loadStorage, detectMode, getRunIdFromHash } from "../api/loader";
+import { loadFabricMapping, loadPipelines, loadServerless, loadStorage, detectMode, getRunIdFromHash } from "../api/loader";
 import { useAsync } from "../hooks/useAsync";
 import { Empty, PctPill, ScorePill, SeverityPill, StatCard } from "../components/Atoms";
 import HelpLink from "../components/HelpLink";
@@ -30,6 +30,7 @@ export default function Dashboard() {
   const { data: fm, loading } = useAsync(loadFabricMapping);
   const { data: storage } = useAsync(loadStorage);
   const { data: pipelines } = useAsync(loadPipelines);
+  const { data: serverless } = useAsync(loadServerless);
   const { data: mode } = useAsync(detectMode);
 
   if (loading) return <div className="empty">Loading…</div>;
@@ -66,6 +67,24 @@ export default function Dashboard() {
   const cp = fm.capacity_projection;
   const sevCount = (s: Severity) =>
     rd?.counts?.[s] ?? fm.recommendations.filter((r: Recommendation) => r.severity === s).length;
+
+  // Steady-state CU from pipeline integration activity (DIU-hr + Orch CU-hr).
+  // 1 CU sustained = 24 CU-hr / day, so daily_CU = (Σ est CU-hr ÷ window_days) ÷ 24.
+  const integrationDailyCu = (() => {
+    const hist = pipelines?.run_history;
+    if (!hist || !hist.by_pipeline?.length) return 0;
+    let totalCuHr = 0;
+    let window = 0;
+    for (const p of hist.by_pipeline) {
+      const w = p.windows.find((w) => w.window_days === 7) ?? p.windows[0];
+      if (!w) continue;
+      totalCuHr += w.est_cu_hours_from_diu ?? 0;
+      totalCuHr += w.est_cu_hours_from_orchestration ?? 0;
+      window = w.window_days;
+    }
+    if (window <= 0) return 0;
+    return (totalCuHr / window) / 24;
+  })();
 
   return (
     <>
@@ -107,8 +126,14 @@ export default function Dashboard() {
           value={cp?.recommended_sku ?? "—"}
           sub={
             cp
-              ? `peak DWU ${Math.round(cp.peak_dwu)} → CU ${cp.estimated_cu.toFixed(1)} (${cp.headroom_pct}% headroom)`
-              : "no monitoring data"
+              ? `peak DWU ${Math.round(cp.peak_dwu)} → CU ${cp.estimated_cu.toFixed(1)} (${cp.headroom_pct}% headroom)${
+                  integrationDailyCu > 0
+                    ? ` · + ${integrationDailyCu.toFixed(2)} CU/day from pipelines`
+                    : ""
+                }`
+              : integrationDailyCu > 0
+                ? `no monitoring data · ${integrationDailyCu.toFixed(2)} CU/day from pipelines`
+                : "no monitoring data"
           }
         />
       </div>
@@ -143,6 +168,7 @@ export default function Dashboard() {
 
       <StorageSection storage={storage} />
       <PipelinesSection pipelines={pipelines} />
+      <ServerlessSection serverless={serverless} />
 
       <section className="section">
         <h2>Inputs analyzed</h2>
@@ -271,9 +297,18 @@ function PipelinesSection({ pipelines }: { pipelines: import("../types").Pipelin
   const totalSucceeded = stats.reduce((s, r) => s + (r.w?.succeeded ?? 0), 0);
   const totalFailed = stats.reduce((s, r) => s + (r.w?.failed ?? 0), 0);
   const totalDataMb = stats.reduce((s, r) => s + (r.w?.total_data_moved_mb ?? 0), 0);
+  const totalDiuHours = stats.reduce((s, r) => s + (r.w?.total_diu_hours ?? 0), 0);
+  const totalCuHoursDm = stats.reduce((s, r) => s + (r.w?.est_cu_hours_from_diu ?? 0), 0);
+  const totalCuHoursOrch = stats.reduce((s, r) => s + (r.w?.est_cu_hours_from_orchestration ?? 0), 0);
+  const totalNonCopyRuns = stats.reduce((s, r) => s + (r.w?.est_non_copy_activity_runs ?? 0), 0);
+  const totalCuHours = totalCuHoursDm + totalCuHoursOrch;
   const dataMovingPipelines = stats.filter((r) => r.has_data_movement && (r.w?.total_data_moved_mb ?? 0) > 0).length;
   const dailyRuns = totalRuns / window;
   const dailyDataMb = totalDataMb / window;
+  // Convert avg daily CU-hours into a steady-state CU equivalent
+  // (1 CU sustained = 24 CU-hr / day, so daily_CU = daily_CU-hr / 24).
+  const dailyCuHours = window > 0 ? totalCuHours / window : 0;
+  const dailyCuEquivalent = dailyCuHours / 24;
   const successRate = totalSucceeded + totalFailed > 0
     ? (totalSucceeded / (totalSucceeded + totalFailed)) * 100
     : null;
@@ -286,7 +321,7 @@ function PipelinesSection({ pipelines }: { pipelines: import("../types").Pipelin
   return (
     <section className="section">
       <h2>Pipeline activity (last {window} days)</h2>
-      <div className="grid cols-4">
+      <div className="grid cols-5">
         <StatCard
           label="Daily pipeline runs"
           value={dailyRuns.toFixed(1)}
@@ -305,6 +340,13 @@ function PipelinesSection({ pipelines }: { pipelines: import("../types").Pipelin
             : "no data-movement activity observed"}
         />
         <StatCard
+          label={`Integration capacity (last ${window} days)`}
+          value={totalCuHours > 0 ? `${totalCuHours.toFixed(2)} CU-hr` : "—"}
+          sub={totalCuHours > 0
+            ? `${totalCuHoursDm.toFixed(2)} from data movement (${totalDiuHours.toFixed(2)} DIU-hr) · ${totalCuHoursOrch.toFixed(2)} from orchestration (${fmtNum(totalNonCopyRuns)} non-copy runs) · ≈ ${dailyCuEquivalent.toFixed(2)} CU sustained`
+            : "no integration activity observed"}
+        />
+        <StatCard
           label="Window"
           value={`${new Date(history.window_start).toLocaleDateString()} → ${new Date(history.window_end).toLocaleDateString()}`}
           sub={`${fmtNum(history.fetched_run_count)} runs · ${fmtNum(history.fetched_activity_run_count)} activity runs${history.truncated ? " (truncated)" : ""}`}
@@ -320,6 +362,9 @@ function PipelinesSection({ pipelines }: { pipelines: import("../types").Pipelin
             <th className="num">Failed</th>
             <th className="num">Data moved / run</th>
             <th className="num">Total moved</th>
+            <th className="num">DIU-hr</th>
+            <th className="num">CU-hr (DM)</th>
+            <th className="num">CU-hr (Orch)</th>
             <th>Last run</th>
           </tr>
         </thead>
@@ -332,6 +377,9 @@ function PipelinesSection({ pipelines }: { pipelines: import("../types").Pipelin
               <td className="num">{fmtNum(r.w!.failed)}</td>
               <td className="num">{r.has_data_movement ? fmtMb(r.w!.avg_data_moved_mb_per_run) : "—"}</td>
               <td className="num">{r.has_data_movement ? fmtMb(r.w!.total_data_moved_mb) : "—"}</td>
+              <td className="num">{r.w?.total_diu_hours != null ? r.w.total_diu_hours.toFixed(2) : "—"}</td>
+              <td className="num">{r.w?.est_cu_hours_from_diu != null ? r.w.est_cu_hours_from_diu.toFixed(2) : "—"}</td>
+              <td className="num">{(r.w?.est_cu_hours_from_orchestration ?? 0).toFixed(3)}</td>
               <td className="small muted">
                 {r.last ? new Date(r.last).toLocaleString() : "—"}
                 {r.lastStatus && <> · <SeverityPill severity={r.lastStatus.toLowerCase() === "succeeded" ? "info" : r.lastStatus.toLowerCase() === "failed" ? "blocker" : "warning"} /></>}
@@ -346,5 +394,153 @@ function PipelinesSection({ pipelines }: { pipelines: import("../types").Pipelin
         </div>
       )}
     </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Serverless SQL query statistics
+// ---------------------------------------------------------------------------
+
+function ServerlessSection({ serverless }: { serverless: import("../types").ServerlessReport | null }) {
+  if (!serverless) return null;
+  const daily = serverless.daily_usage ?? [];
+  const dbCount = serverless.databases?.length ?? 0;
+  const tableCount = serverless.external_tables?.length ?? 0;
+  // If there's no serverless inventory at all, hide the section entirely.
+  if (daily.length === 0 && dbCount === 0 && tableCount === 0) return null;
+
+  // Sort ascending by day so charts read left-to-right.
+  const sorted = [...daily].sort((a, b) => a.day.localeCompare(b.day));
+  const last7 = sorted.slice(-7);
+
+  const totalRequests = sorted.reduce((s, d) => s + (d.request_count ?? 0), 0);
+  const totalDataMb = sorted.reduce((s, d) => s + (d.data_processed_mb ?? 0), 0);
+  const windowDays = sorted.length;
+  const avgDailyRequests = windowDays > 0 ? totalRequests / windowDays : 0;
+  const avgQueryMb = totalRequests > 0 ? totalDataMb / totalRequests : 0;
+
+  if (daily.length === 0) {
+    return (
+      <section className="section">
+        <h2>Serverless SQL</h2>
+        <div className="grid cols-3">
+          <StatCard label="Databases" value={fmtNum(dbCount)} />
+          <StatCard label="External tables" value={fmtNum(tableCount)} />
+          <StatCard
+            label="Endpoint"
+            value={serverless.endpoint_fqdn ? <code className="small">{serverless.endpoint_fqdn}</code> : "—"}
+          />
+        </div>
+        <div className="small muted" style={{ marginTop: 12 }}>
+          No daily query history available. <code>sys.dm_exec_requests_history</code> only
+          returns queries submitted by the current login unless the principal has
+          <code> VIEW SERVER STATE</code> or is a Synapse SQL admin. Grant that
+          permission and re-run <code>sma analyze-serverless-pools</code> to populate
+          this chart.
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="section">
+      <h2>Serverless SQL ({windowDays} days observed)</h2>
+      <div className="grid cols-4">
+        <StatCard
+          label="Avg daily queries"
+          value={avgDailyRequests.toFixed(1)}
+          sub={`${fmtNum(totalRequests)} succeeded queries`}
+        />
+        <StatCard
+          label="Total data scanned"
+          value={fmtMb(totalDataMb)}
+          sub={`${fmtMb(totalDataMb / Math.max(1, windowDays))} / day avg`}
+        />
+        <StatCard
+          label="Avg query data size"
+          value={fmtMb(avgQueryMb)}
+          sub="data scanned per query"
+        />
+        <StatCard
+          label="Estimated cost"
+          value={
+            serverless.cost_estimate
+              ? `$${serverless.cost_estimate.estimated_cost_usd.toFixed(2)}`
+              : "—"
+          }
+          sub={
+            serverless.cost_estimate
+              ? `${serverless.cost_estimate.total_data_processed_tb.toFixed(3)} TB · $${serverless.cost_estimate.list_price_usd_per_tb}/TB list price`
+              : "no cost estimate"
+          }
+        />
+      </div>
+
+      {last7.length > 0 && <ServerlessClusteredBars days={last7} />}
+    </section>
+  );
+}
+
+function ServerlessClusteredBars({ days }: { days: import("../types").ServerlessDailyUsage[] }) {
+  // Clustered bar chart: queries vs MB per day. Two y-axes so we don't compare
+  // apples to oranges; each bar pair is normalized against its own series max.
+  const maxRequests = Math.max(1, ...days.map((d) => d.request_count ?? 0));
+  const maxMb = Math.max(1, ...days.map((d) => d.data_processed_mb ?? 0));
+
+  const width = 720;
+  const height = 220;
+  const padX = 56;
+  const padTop = 16;
+  const padBottom = 44;
+  const innerH = height - padTop - padBottom;
+  const groupW = (width - padX * 2) / days.length;
+  const barW = Math.max(6, Math.min(28, (groupW - 8) / 2));
+
+  return (
+    <div style={{ marginTop: 16, overflowX: "auto" }}>
+      <div className="small muted" style={{ marginBottom: 6 }}>
+        <span style={{ display: "inline-block", width: 10, height: 10, background: "#2f81f7", marginRight: 4, verticalAlign: "middle" }} />
+        Queries (left axis)
+        {"  "}
+        <span style={{ display: "inline-block", width: 10, height: 10, background: "#f7942f", margin: "0 4px 0 12px", verticalAlign: "middle" }} />
+        MB scanned (right axis)
+      </div>
+      <svg viewBox={`0 0 ${width} ${height}`} width="100%" style={{ maxWidth: width, fontSize: 10 }} role="img" aria-label="Serverless SQL last 7 days clustered bar chart">
+        <line x1={padX} x2={width - padX} y1={height - padBottom} y2={height - padBottom} stroke="currentColor" opacity={0.3} />
+        <line x1={padX} x2={padX} y1={padTop} y2={height - padBottom} stroke="currentColor" opacity={0.3} />
+        <line x1={width - padX} x2={width - padX} y1={padTop} y2={height - padBottom} stroke="currentColor" opacity={0.3} />
+        {[0, 0.5, 1].map((t, i) => (
+          <g key={i}>
+            <text x={padX - 6} y={height - padBottom - innerH * t + 3} textAnchor="end" fill="currentColor" opacity={0.7}>
+              {Math.round(maxRequests * t)}
+            </text>
+            <text x={width - padX + 6} y={height - padBottom - innerH * t + 3} textAnchor="start" fill="currentColor" opacity={0.7}>
+              {fmtMb(maxMb * t)}
+            </text>
+          </g>
+        ))}
+        {days.map((d, i) => {
+          const cx = padX + groupW * i + groupW / 2;
+          const reqH = ((d.request_count ?? 0) / maxRequests) * innerH;
+          const mbH = ((d.data_processed_mb ?? 0) / maxMb) * innerH;
+          const reqX = cx - barW - 1;
+          const mbX = cx + 1;
+          const baseY = height - padBottom;
+          return (
+            <g key={d.day}>
+              <rect x={reqX} y={baseY - reqH} width={barW} height={reqH} fill="#2f81f7">
+                <title>{`${d.day}: ${fmtNum(d.request_count)} queries`}</title>
+              </rect>
+              <rect x={mbX} y={baseY - mbH} width={barW} height={mbH} fill="#f7942f">
+                <title>{`${d.day}: ${fmtMb(d.data_processed_mb)} scanned`}</title>
+              </rect>
+              <text x={cx} y={height - padBottom + 14} textAnchor="middle" fill="currentColor" opacity={0.8}>
+                {d.day.slice(5)}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+    </div>
   );
 }

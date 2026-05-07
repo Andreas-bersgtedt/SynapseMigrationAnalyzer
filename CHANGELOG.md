@@ -8,6 +8,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _No changes yet._
 
+## [2.3.0] - 2026-05-07
+
+### Added
+- **Configuration page: "Validate access (live)" button.** In addition to
+  the existing field/format checks, the SPA can now exercise real Azure
+  control-plane and Synapse data-plane connectivity using the saved
+  service principal:
+  - **Control plane** — AAD token for `https://management.azure.com/.default`
+    and `SynapseManagementClient.workspaces.get` (proves Reader on the
+    workspace).
+  - **Data plane** — `ArtifactsClient.pipeline.get_pipelines_by_workspace`
+    (proves Synapse Artifact User), AAD token for
+    `https://database.windows.net/.default`, and `SELECT 1` against the
+    serverless SQL endpoint (and the dedicated pool when
+    `SYNAPSE_DEDICATED_POOL` is set).
+  - Backed by `POST /api/config/validate?live=true`. Each check is
+    tagged with a `category` (`Configuration` / `Control plane` /
+    `Data plane`) and rendered as grouped sections with the underlying
+    error message in the FAIL detail. Connection failures never
+    propagate as 5xx; they show up as a red pill with the actual
+    exception text so missing role assignments are obvious.
+- **Dashboard: Serverless SQL section.** New tiles for
+  *Avg daily queries*, *Total data scanned*, *Avg query data size* and
+  *Estimated cost*, plus an inline-SVG dual-axis clustered bar chart
+  over the last 7 days (queries vs MB scanned). Reads the existing
+  `serverless_pools.json`. When `daily_usage` is empty (typical when
+  the SP lacks `VIEW SERVER STATE` and `sys.dm_exec_requests_history`
+  only returns the caller's own history) the section still renders the
+  database / external-table counts and a permissions hint.
+
+### Fixed
+- **Serverless `data_processed.sql` filter.** Aggregation now filters
+  `status = 'Completed'` instead of `'Succeeded'` — the latter is not
+  a valid value of `sys.dm_exec_requests_history.status` and silently
+  yielded zero rows, so daily-usage and cost-estimate were always 0
+  TB / $0 even when queries had run.
+
 ## [2.2.2] - 2026-05-06
 
 ### Removed

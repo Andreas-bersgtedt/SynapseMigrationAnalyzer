@@ -1,20 +1,27 @@
 """Project a Fabric capacity (CU) SKU from observed Synapse DWU usage.
 
 Heuristic only. Derives a recommended Fabric capacity SKU from peak observed DWU and
-a configurable safety headroom (default 30 %). The mapping table is approximate and
-reflects published Microsoft sizing guidance at time of writing — confirm with the
-current Fabric capacity sizing calculator.
+a configurable safety headroom (default 30 %). The mapping is approximate — confirm
+with the current Fabric capacity sizing calculator and a TPC-style POC on real data.
 
 Approach:
 
-1. Pick the highest p95 of ``DWUUsedPercent * DWULimit / 100`` across all pools
-   (= peak active DWU consumed).
+1. Pick the highest ``DWUUsedPercent * DWULimit / 100`` across all pools and
+   timestamps (= peak active DWU consumed).
 2. Apply headroom (default 1.3x).
-3. Look up the smallest Fabric F-SKU that covers that DWU equivalent.
+3. Convert DWU → CU at ``DWU_TO_CU`` (default 0.020, i.e. 100 DWU ≈ 2.0 CU).
+4. Look up the smallest Fabric F-SKU whose CU count covers that estimate.
 
-Why DWU → F-SKU?  Microsoft's published guidance is roughly 1 DWU ≈ ~0.6 CU for
-analytical Warehouse workloads; we use 0.7 to be slightly conservative. Mileage will
-vary heavily by query mix — this is a *starting* SKU, not a final one.
+The ``DWU_TO_CU`` value is *not* a Microsoft-published constant — Microsoft does not
+publish a linear DWU→CU multiplier and the Fabric Updates Blog post
+"Mapping Azure Synapse dedicated SQL pools to Fabric data warehouse compute"
+(Hoang & Schacht, 2024;
+https://blog.fabric.microsoft.com/blog/mapping-azure-synapse-dedicated-sql-pools-to-fabric-data-warehouse-compute/)
+explicitly notes that a simple resource mapping is not accurate. Instead, that
+blog publishes empirical TPC-H peer pairs (e.g. F32 ≈ DWU1000 power-run, F64 ≈
+DWU1500–3000, F128 ≈ recommended for 10 TB). 0.020 CU/DWU + 30 % headroom
+reproduces those performance-parity peers reasonably well across F8 → F2048 and
+is intended as a *starting* SKU for a POC, not a final size.
 """
 from __future__ import annotations
 
@@ -29,7 +36,8 @@ _FSKU_TABLE: tuple[tuple[str, int], ...] = (
     ("F512", 512), ("F1024", 1024), ("F2048", 2048),
 )
 
-DWU_TO_CU = 0.7  # see module docstring
+# 100 DWU ≈ 2.0 CU. Heuristic; see module docstring for rationale and caveats.
+DWU_TO_CU = 0.020
 
 
 @dataclass(frozen=True)

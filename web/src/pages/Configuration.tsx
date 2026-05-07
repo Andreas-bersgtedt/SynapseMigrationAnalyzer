@@ -23,6 +23,7 @@ export default function Configuration(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [secret, setSecret] = useState<string>("");
   const [validation, setValidation] = useState<ValidateResponse | null>(null);
+  const [validating, setValidating] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
 
@@ -62,11 +63,15 @@ export default function Configuration(): JSX.Element {
     }
   };
 
-  const onValidate = async () => {
+  const onValidate = async (live: boolean) => {
+    setValidating(true);
+    setValidation(null);
     try {
-      setValidation(await apiValidateConfig());
+      setValidation(await apiValidateConfig({ live }));
     } catch (e) {
       setSaveMsg(`Validate failed: ${(e as Error).message}`);
+    } finally {
+      setValidating(false);
     }
   };
 
@@ -105,22 +110,46 @@ export default function Configuration(): JSX.Element {
         <button onClick={onSave} disabled={saving}>
           {saving ? "Saving…" : "Save"}
         </button>
-        <button onClick={onValidate}>Validate</button>
+        <button onClick={() => onValidate(false)} disabled={validating}>
+          {validating ? "Validating…" : "Validate (fields)"}
+        </button>
+        <button onClick={() => onValidate(true)} disabled={validating} title="Test live Azure + Synapse connectivity using the saved service principal">
+          {validating ? "Testing…" : "Validate access (live)"}
+        </button>
         {saveMsg && <span className="muted">{saveMsg}</span>}
       </div>
 
       {validation && (
         <div className="card" style={{ marginTop: "1rem" }}>
-          <div className="label">Validation</div>
-          <ul>
-            {validation.checks.map((c) => (
-              <li key={c.name}>
-                <span className={`pill ${c.ok ? "ok" : "err"}`}>{c.ok ? "OK" : "FAIL"}</span>{" "}
-                <code>{c.name}</code>
-                {c.detail && <span className="muted"> — {c.detail}</span>}
-              </li>
-            ))}
-          </ul>
+          <div className="label">
+            Validation —{" "}
+            <span className={`pill ${validation.ok ? "ok" : "err"}`}>
+              {validation.ok ? "ALL OK" : "FAILED"}
+            </span>
+          </div>
+          {(() => {
+            // Group by category, preserving insertion order.
+            const groups = new Map<string, typeof validation.checks>();
+            for (const c of validation.checks) {
+              const k = c.category || "Configuration";
+              if (!groups.has(k)) groups.set(k, []);
+              groups.get(k)!.push(c);
+            }
+            return Array.from(groups.entries()).map(([cat, items]) => (
+              <div key={cat} style={{ marginTop: "0.5rem" }}>
+                <div className="small muted" style={{ fontWeight: 600 }}>{cat}</div>
+                <ul>
+                  {items.map((c) => (
+                    <li key={c.name}>
+                      <span className={`pill ${c.ok ? "ok" : "err"}`}>{c.ok ? "OK" : "FAIL"}</span>{" "}
+                      <code>{c.name}</code>
+                      {c.detail && <span className="muted"> — {c.detail}</span>}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ));
+          })()}
         </div>
       )}
     </section>
