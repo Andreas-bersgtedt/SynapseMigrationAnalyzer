@@ -21,18 +21,13 @@ The page does not consume any analyzer JSON — it talks to the API
 ```
 Start a new run
 
-Label  [ pre-migration baseline ………………………………… ]
+Label  [ syn-prod-eu …………………………………… ]   ← defaults to the workspace name
 
 Modules
-[x] dedicated_pools     [x] serverless_pools   [x] storage
-[x] security            [x] governance         [x] monitoring
-[x] cost                [ ] pipelines
-[x] fabric_mapping
-
-Options
-[ ] --with-run-history     Days [ 7 ]
-[ ] --with-data-flows
-[ ] --with-pipeline-trends
+[x] dedicated_pools     [x] serverless_pools   [x] spark_pools
+[x] pipelines           [x] monitoring         [x] storage
+[x] fabric_mapping      [x] governance         [x] security
+[x] cost                [x] fabric_validation
 
 [ Start run ]            [ Cancel ]   ← (visible while running)
 
@@ -57,41 +52,31 @@ latest event. State pill: `pending` (muted), `running` (amber spinner),
 ### Label
 
 Free-text label persisted with the run. Shown in
-[10. Runs history](10-runs-history.md) and in the run picker.
-Optional, but strongly recommended (you'll thank yourself when the
-list grows).
+[10. Runs history](10-runs-history.md) and in the run picker. The
+field **defaults to the configured workspace name** so the run list
+stays scannable when you have multiple workspaces; type to override.
+The field is cleared and respected once you start typing — switching
+workspaces in [12. Configuration](12-configuration.md) only updates
+the default on a fresh load.
 
 ### Modules
 
-The first-class modules surfaced by the Run page:
+All modules are selected by default. Untick the ones you don't need
+for a quicker run.
 
 | Module             | Default | Notes |
 | ------------------ | :-----: | ----- |
 | `dedicated_pools`  |   ✓     | Inventory + code objects + T-SQL surface. |
 | `serverless_pools` |   ✓     | Logical / external table inventory. |
-| `storage`          |   ✓     | ADLS accounts, containers, capacities. |
-| `security`         |   ✓     | Logins, roles, masking. |
-| `governance`       |   ✓     | Naming, grants, ownership. |
+| `spark_pools`      |   ✓     | Spark pool inventory. |
+| `pipelines`        |   ✓     | Pipelines + activities + linked services. |
 | `monitoring`       |   ✓     | DWU usage / log query stats. |
-| `cost`             |   ✓     | DWU-hours and spend attribution. |
-| `pipelines`        |         | Pipelines + activities + linked services. |
+| `storage`          |   ✓     | ADLS accounts attached to the workspace (default ADLS + linked-service references). Set `SMA_STORAGE_INCLUDE_ALL=1` in `.env` to inventory every account in the subscription. |
 | `fabric_mapping`   |   ✓     | Aggregates everything into recommendations & runbook. |
-
-`fabric_validation` is **experimental** and CLI-only (opt-in via
-`--include fabric_validation`). It performs post-migration parity
-checks (object counts, row counts, collations, T-SQL surface
-resolution) against a target Fabric warehouse. It is **not surfaced
-in the SPA Run page**; consume the JSON / Markdown / HTML output
-directly. Schema and CLI flags may change without notice.
-
-### Options
-
-| Option                         | Effect |
-| ------------------------------ | ------ |
-| **--with-run-history**         | Pulls the last *N* days of pipeline run history. Required for the Pipeline activity section on the [Dashboard](04-dashboard.md). Slower (extra Monitor query). |
-| **Days** (with run history)    | Window length — default 7. |
-| **--with-data-flows**          | Includes Synapse Mapping Data Flow inventory (extra REST calls). |
-| **--with-pipeline-trends**     | Computes per-pipeline trend stats over the run-history window. |
+| `governance`       |   ✓     | Naming, grants, ownership. |
+| `security`         |   ✓     | Logins, roles, masking. |
+| `cost`             |   ✓     | DWU-hours and spend attribution. |
+| `fabric_validation`|   ✓     | Post-migration parity checks vs a target Fabric warehouse (experimental). |
 
 ### Buttons
 
@@ -109,9 +94,7 @@ directly. Schema and CLI flags may change without notice.
 
 1. Uncheck every module except `pipelines` (and `fabric_mapping` if
    you want recommendations).
-2. Tick **--with-run-history**.
-3. Set **Days** to 1.
-4. Click **Start run**.
+2. Click **Start run**.
 
 A pipeline-only run typically finishes in under a minute.
 

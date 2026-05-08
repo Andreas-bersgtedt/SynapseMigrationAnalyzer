@@ -53,3 +53,29 @@ def cancel_run(run_id: str, state: AppState = Depends(get_state)) -> dict[str, b
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     cancelled = state.runner.cancel(run_id)
     return {"cancelled": cancelled}
+
+
+@router.delete("/{run_id}/data")
+def delete_run_data(run_id: str, state: AppState = Depends(get_state)) -> dict[str, bool]:
+    """Purge a run's on-disk artefacts.
+
+    Refuses while the run is still in flight — cancel first via
+    ``DELETE /api/runs/{id}`` then call this endpoint to remove the data.
+    """
+    try:
+        meta = state.repo.get(run_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if meta is None:
+        raise HTTPException(status_code=404, detail=f"run {run_id} not found")
+    if meta.status in ("queued", "running"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"run {run_id} is still {meta.status}; cancel before deleting",
+        )
+    deleted = state.repo.delete(run_id)
+    try:
+        state.estate.invalidate(run_id)
+    except Exception:  # noqa: BLE001
+        pass
+    return {"deleted": deleted}

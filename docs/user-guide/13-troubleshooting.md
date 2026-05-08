@@ -58,8 +58,7 @@ A symptom → cause → fix matrix for the most common problems.
 
 | Cause | Fix |
 | ----- | --- |
-| You ran `pipelines` without `--with-run-history`. | Re-run with the flag (or tick the checkbox on the [Run page](09-run-page.md)). |
-| The Synapse workspace has **no pipeline runs** in the chosen window. | Increase **Days**. |
+| The Synapse workspace has **no pipeline runs** recorded by Azure Monitor in the inspected window. | Trigger a run, then re-run the analyzer. |
 | The principal lacks **Reader** on the workspace's Activity Log. | Add the role at the workspace scope. |
 
 ### "Diff page returns 500"
@@ -75,6 +74,26 @@ A symptom → cause → fix matrix for the most common problems.
 | ----- | --- |
 | `fabric_mapping` module wasn't selected. | Re-run with `fabric_mapping` enabled. It's free — it only consumes the other modules' output. |
 | All upstream modules failed. | Check *Errors* on [10. Runs history](10-runs-history.md). |
+
+### "Switching workspaces in Configuration doesn't change the next run"
+
+| Cause | Fix |
+| ----- | --- |
+| Pre-2.1 bug where `load_dotenv()` was called without `override=True`, so `.env` edits were ignored by the long-lived `sma serve` process. | Upgrade to **2.1.0+**. The server now reloads `.env` with `override=True` for every analyzer invocation, so saved Configuration edits take effect on the next run with no restart. |
+| You edited `.env` on disk while a run is in flight. | The active run keeps its original config. The change applies on the next run. |
+
+### "Storage scan returns every account in the subscription"
+
+| Cause | Fix |
+| ----- | --- |
+| `SMA_STORAGE_INCLUDE_ALL` is set to `1` / `true` / `yes`. | Remove the variable from `.env` (or set it to `0`) to restrict the inventory to accounts attached to the workspace — the default ADLS Gen2 plus any account referenced by a linked service. |
+| You're on pre-2.1 and the scope filter doesn't exist yet. | Upgrade to **2.1.0+**. |
+
+### "Storage scan is missing an account I know is used by a pipeline"
+
+| Cause | Fix |
+| ----- | --- |
+| The linked service uses a managed-identity / shared-access-signature URL the parser can't extract a host from. | Set `SMA_STORAGE_INCLUDE_ALL=1` in `.env` to fall back to the legacy subscription-wide scan. File an issue with the linked-service definition redacted so the parser can be improved. |
 
 ---
 
@@ -139,9 +158,8 @@ the API restarts.
 
 | Cause | Fix |
 | ----- | --- |
-| `--with-run-history` with a long window. | Lower **Days**. The default of 7 covers most needs. |
+| Many storage accounts in scope. | Confirm `SMA_STORAGE_INCLUDE_ALL` is **not** set; the default workspace-scoped scan is dramatically faster on subscriptions with many unrelated storage accounts. |
 | Many pipelines and pre-2.0 sequential run-history fetch. | Upgrade to **2.0.0+** — pipeline run-history is now batched. |
-| `--with-data-flows` enabled but you don't use Mapping Data Flows. | Turn it off. |
 
 ### "SPA feels sluggish on a large workspace"
 

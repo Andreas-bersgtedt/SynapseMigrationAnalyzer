@@ -44,8 +44,16 @@ _REQUIRED = (
 
 
 def load_config(env_file: str | os.PathLike[str] | None = None) -> AppConfig:
-    """Load and validate config from .env / environment variables."""
-    load_dotenv(env_file) if env_file else load_dotenv()
+    """Load and validate config from .env / environment variables.
+
+    ``override=True`` is used so that the long-lived ``sma serve`` process
+    picks up edits made via ``PUT /api/config`` (which rewrites ``.env``)
+    instead of being pinned to whatever values were first loaded at boot.
+    """
+    if env_file:
+        load_dotenv(env_file, override=True)
+    else:
+        load_dotenv(override=True)
 
     missing = [k for k in _REQUIRED if not os.getenv(k)]
     if missing:

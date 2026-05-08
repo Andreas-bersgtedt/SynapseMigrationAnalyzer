@@ -19,6 +19,8 @@
 import type {
   CostReport,
   DedicatedPoolsReport,
+  EstateReport,
+  EstateWorkspace,
   FabricMappingReport,
   GovernanceReport,
   PipelinesReport,
@@ -196,7 +198,19 @@ export type AppConfig = {
 };
 
 export type ConfigCheck = { name: string; ok: boolean; detail: string | null; category?: string | null };
-export type ValidateResponse = { ok: boolean; checks: ConfigCheck[] };
+export type WorkspaceSummary = {
+  name: string;
+  resource_group: string;
+  location: string | null;
+  sql_endpoint: string | null;
+  sql_on_demand_endpoint: string | null;
+  is_current: boolean;
+};
+export type ValidateResponse = {
+  ok: boolean;
+  checks: ConfigCheck[];
+  workspaces?: WorkspaceSummary[] | null;
+};
 
 export async function apiListRuns(limit = 50): Promise<RunMeta[]> {
   const r = await fetch(`/api/runs?limit=${limit}`);
@@ -232,6 +246,18 @@ export async function apiCancelRun(id: string): Promise<{ cancelled: boolean }> 
   return r.json() as Promise<{ cancelled: boolean }>;
 }
 
+export async function apiDeleteRunData(id: string): Promise<{ deleted: boolean }> {
+  const r = await fetch(`/api/runs/${encodeURIComponent(id)}/data`, {
+    method: "DELETE",
+    headers: API_HEADERS,
+  });
+  if (!r.ok) {
+    const detail = await r.text();
+    throw new Error(`DELETE /api/runs/${id}/data ${r.status}: ${detail}`);
+  }
+  return r.json() as Promise<{ deleted: boolean }>;
+}
+
 export async function apiGetConfig(): Promise<AppConfig> {
   const r = await fetch("/api/config");
   if (!r.ok) throw new Error(`/api/config: HTTP ${r.status}`);
@@ -264,3 +290,31 @@ export async function apiGetDiff(runId: string, base?: string): Promise<unknown>
   if (!r.ok) throw new Error(`GET /api/runs/${runId}/diff: HTTP ${r.status}`);
   return r.json();
 }
+
+export async function apiGetEstate(opts: { refresh?: boolean } = {}): Promise<EstateReport> {
+  const qs = opts.refresh ? "?refresh=1" : "";
+  const r = await fetch(`/api/estate${qs}`);
+  if (!r.ok) throw new Error(`GET /api/estate: HTTP ${r.status}`);
+  return r.json() as Promise<EstateReport>;
+}
+
+export async function apiGetEstateWorkspace(key: string): Promise<EstateWorkspace> {
+  const r = await fetch(`/api/estate/workspaces/${encodeURIComponent(key)}`);
+  if (!r.ok) throw new Error(`GET /api/estate/workspaces/${key}: HTTP ${r.status}`);
+  return r.json() as Promise<EstateWorkspace>;
+}
+
+export function apiEstateCsvUrl(): string {
+  return "/api/estate/export.csv";
+}
+
+export async function apiGetRunModule<T>(runId: string, name: string): Promise<T | null> {
+  const slug = name.replace(/\.json$/, "");
+  const r = await fetch(
+    `/api/runs/${encodeURIComponent(runId)}/modules/${encodeURIComponent(slug)}`,
+    { cache: "no-store" },
+  );
+  if (!r.ok) return null;
+  return r.json() as Promise<T>;
+}
+

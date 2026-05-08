@@ -44,7 +44,15 @@ def validate(
     ``?live=true`` additionally exercises Azure control-plane (ARM) and
     Synapse data-plane (Artifacts REST + SQL ``SELECT 1``) connectivity using
     the configured service principal, so the user can confirm RBAC was granted
-    on both planes.
+    on both planes. The live response also enumerates every Synapse workspace
+    visible to the SP at the configured subscription scope.
     """
-    checks = validate_config_live(state.env_file) if live else validate_config(state.env_file)
+    if live:
+        checks, workspaces = validate_config_live(state.env_file)
+        return ValidateConfigResponse(
+            ok=all(c.ok for c in checks),
+            checks=checks,
+            workspaces=workspaces,
+        )
+    checks = validate_config(state.env_file)
     return ValidateConfigResponse(ok=all(c.ok for c in checks), checks=checks)

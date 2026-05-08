@@ -6,17 +6,23 @@ import {
   apiValidateConfig,
   type AppConfig,
   type ValidateResponse,
+  type WorkspaceSummary,
 } from "../api/loader";
 
 const FIELDS = [
   ["azure", "tenant_id", "Tenant ID"],
   ["azure", "client_id", "Client ID"],
   ["azure", "subscription_id", "Subscription ID"],
-  ["azure", "resource_group", "Resource group"],
-  ["azure", "workspace_name", "Workspace name"],
   ["azure", "dedicated_pool", "Dedicated pool (optional)"],
   ["sql", "odbc_driver", "ODBC driver"],
 ] as const;
+
+const CUSTOM_WORKSPACE = "__custom__";
+
+function workspaceKey(rg: string | null, name: string | null): string {
+  if (!rg || !name) return "";
+  return `${rg}/${name}`;
+}
 
 export default function Configuration(): JSX.Element {
   const [cfg, setCfg] = useState<AppConfig | null>(null);
@@ -26,6 +32,10 @@ export default function Configuration(): JSX.Element {
   const [validating, setValidating] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
+  const [workspaces, setWorkspaces] = useState<WorkspaceSummary[] | null>(null);
+  const [discovering, setDiscovering] = useState(false);
+  const [discoverError, setDiscoverError] = useState<string | null>(null);
+  const [customWorkspace, setCustomWorkspace] = useState(false);
 
   useEffect(() => {
     apiGetConfig().then(setCfg).catch((e: Error) => setError(e.message));
@@ -38,6 +48,13 @@ export default function Configuration(): JSX.Element {
     setCfg({
       ...cfg,
       [group]: { ...cfg[group], [key]: value },
+    });
+  };
+
+  const updateWorkspace = (name: string, resource_group: string) => {
+    setCfg({
+      ...cfg,
+      azure: { ...cfg.azure, workspace_name: name, resource_group },
     });
   };
 
@@ -67,11 +84,27 @@ export default function Configuration(): JSX.Element {
     setValidating(true);
     setValidation(null);
     try {
-      setValidation(await apiValidateConfig({ live }));
+      const r = await apiValidateConfig({ live });
+      setValidation(r);
+      if (live && r.workspaces) setWorkspaces(r.workspaces);
     } catch (e) {
       setSaveMsg(`Validate failed: ${(e as Error).message}`);
     } finally {
       setValidating(false);
+    }
+  };
+
+  const onDiscoverWorkspaces = async () => {
+    setDiscovering(true);
+    setDiscoverError(null);
+    try {
+      const r = await apiValidateConfig({ live: true });
+      setValidation(r);
+      setWorkspaces(r.workspaces ?? []);
+    } catch (e) {
+      setDiscoverError((e as Error).message);
+    } finally {
+      setDiscovering(false);
     }
   };
 
@@ -105,6 +138,110 @@ export default function Configuration(): JSX.Element {
           />
         </label>
       </div>
+
+      {(() => {
+        const currentKey = workspaceKey(cfg.azure.resource_group, cfg.azure.workspace_name);
+        const list = workspaces ?? [];
+        const knownKeys = new Set(list.map((w) => workspaceKey(w.resource_group, w.name)));
+        const currentInList = currentKey !== "" && knownKeys.has(currentKey);
+        const showCustom = customWorkspace || (!currentInList && currentKey !== "" && list.length > 0);
+        const useDropdown = list.length > 0 && !showCustom;
+        return (
+          <div className="card" style={{ marginTop: "1rem" }}>
+            <div className="label" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span>Synapse workspace</span>
+              <button
+                type="button"
+                onClick={onDiscoverWorkspaces}
+                disabled={discovering || saving}
+                title="List Synapse workspaces in the configured subscription"
+              >
+                {discovering ? "Discovering…" : workspaces ? "Refresh list" : "Discover workspaces"}
+              </button>
+              {workspaces && (
+                <span className="small muted">
+                  {list.length} workspace{list.length === 1 ? "" : "s"} in subscription
+                </span>
+              )}
+              {discoverError && <span className="small" style={{ color: "var(--err, #c33)" }}>{discoverError}</span>}
+            </div>
+
+            {useDropdown ? (
+              <div className="form-grid" style={{ marginTop: 6 }}>
+                <label>
+                  <span>Workspace</span>
+                  <select
+                    value={currentInList ? currentKey : ""}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (v === CUSTOM_WORKSPACE) {
+                        setCustomWorkspace(true);
+                        return;
+                      }
+                      const ws = list.find(
+                        (w) => workspaceKey(w.resource_group, w.name) === v,
+                      );
+                      if (ws) updateWorkspace(ws.name, ws.resource_group);
+                    }}
+                  >
+                    {!currentInList && (
+                      <option value="" disabled>
+                        — select a workspace —
+                      </option>
+                    )}
+                    {list.map((w) => (
+                      <option
+                        key={workspaceKey(w.resource_group, w.name)}
+                        value={workspaceKey(w.resource_group, w.name)}
+                      >
+                        {w.name} ({w.resource_group}
+                        {w.location ? `, ${w.location}` : ""})
+                        {w.is_current ? " — current" : ""}
+                      </option>
+                    ))}
+                    <option value={CUSTOM_WORKSPACE}>Enter manually…</option>
+                  </select>
+                </label>
+              </div>
+            ) : (
+              <div className="form-grid" style={{ marginTop: 6 }}>
+                <label>
+                  <span>Workspace name</span>
+                  <input
+                    type="text"
+                    value={cfg.azure.workspace_name ?? ""}
+                    onChange={(e) => update("azure", "workspace_name", e.target.value)}
+                  />
+                </label>
+                <label>
+                  <span>Resource group</span>
+                  <input
+                    type="text"
+                    value={cfg.azure.resource_group ?? ""}
+                    onChange={(e) => update("azure", "resource_group", e.target.value)}
+                  />
+                </label>
+                {list.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setCustomWorkspace(false)}
+                    style={{ alignSelf: "end" }}
+                  >
+                    Pick from list
+                  </button>
+                )}
+              </div>
+            )}
+
+            {!workspaces && (
+              <p className="small muted" style={{ marginTop: 6 }}>
+                Tip: click <em>Discover workspaces</em> to populate a dropdown of
+                Synapse workspaces accessible to the configured service principal.
+              </p>
+            )}
+          </div>
+        );
+      })()}
 
       <div className="actions">
         <button onClick={onSave} disabled={saving}>
@@ -150,6 +287,14 @@ export default function Configuration(): JSX.Element {
               </div>
             ));
           })()}
+
+          {validation.workspaces && validation.workspaces.length > 0 && (
+            <div className="small muted" style={{ marginTop: "0.75rem" }}>
+              {validation.workspaces.length} accessible Synapse workspace
+              {validation.workspaces.length === 1 ? "" : "s"} — pick one in the
+              <em> Synapse workspace</em> selector above.
+            </div>
+          )}
         </div>
       )}
     </section>

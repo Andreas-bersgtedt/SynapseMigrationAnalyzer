@@ -25,10 +25,10 @@ Runs (50 most recent)
 ┌──────────────────────────┬───────────────────────────┬──────────┬─────────────────────┬──────────┬────────┬───────┬─────────┐
 │ ID                       │ Label                     │ Status   │ Started             │ Duration │ Errors │ Score │         │
 ├──────────────────────────┼───────────────────────────┼──────────┼─────────────────────┼──────────┼────────┼───────┼─────────┤
-│ 2026-05-05T12-04-11Z     │ pre-migration baseline    │ ● ok     │ 5 May 2026 12:04:11 │ 02:14    │   0    │  84   │ Open    │
-│ 2026-05-04T18-22-09Z     │ post-stats refresh        │ ● ok     │ 4 May 2026 18:22:09 │ 01:58    │   0    │  82   │ Open    │
-│ 2026-05-04T09-10-00Z     │ first attempt             │ ◐ partial│ 4 May 2026 09:10:00 │ 00:42    │   2    │  76   │ Open    │
-│ 2026-05-03T17-01-15Z     │ smoke                     │ ● failed │ 3 May 2026 17:01:15 │ 00:08    │   1    │   —   │ Open    │
+│ 2026-05-05T12-04-11Z     │ syn-prod-eu               │ ● ok     │ 5 May 2026 12:04:11 │ 02:14    │   0    │  84   │ Open · Delete │
+│ 2026-05-04T18-22-09Z     │ syn-prod-eu               │ ● ok     │ 4 May 2026 18:22:09 │ 01:58    │   0    │  82   │ Open · Delete │
+│ 2026-05-04T09-10-00Z     │ first attempt             │ ◐ partial│ 4 May 2026 09:10:00 │ 00:42    │   2    │  76   │ Open · Delete │
+│ 2026-05-03T17-01-15Z     │ smoke                     │ ● failed │ 3 May 2026 17:01:15 │ 00:08    │   1    │   —   │ Open · Delete │
 └──────────────────────────┴───────────────────────────┴──────────┴─────────────────────┴──────────┴────────┴───────┴─────────┘
 ```
 
@@ -44,6 +44,7 @@ Runs (50 most recent)
 | **Errors**  | `error_count`                        | Module-level errors; click **Open** then the [Dashboard](04-dashboard.md) → *Inputs analyzed* card to see which module(s) failed. |
 | **Score**   | `summary.readiness_score`            | Same value as the headline card on the Dashboard. `—` if the run has no `fabric_mapping.json`. |
 | **Open**    | button                               | Sets `#run=<id>` in the URL and navigates to `/`. Equivalent to picking the run in the run picker. |
+| **Delete**  | button                               | Deletes the run folder on disk after a confirmation prompt. Disabled while the run is `queued` or `running` (the API responds `409`). If the deleted run is currently active, the page clears `#run=<id>` so the next page load picks a different run. |
 
 ## Common tasks
 
@@ -71,8 +72,14 @@ Three common reasons:
 
 ### "Clean up old runs"
 
-The analyzer never deletes runs automatically. Delete the run folder
-on disk, then refresh the page.
+Click **Delete** on the row, confirm the prompt, and the run folder
+is removed via `DELETE /api/runs/{id}/data`. The list refreshes
+automatically. Active runs (`queued` / `running`) cannot be deleted
+— cancel them first.
+
+The analyzer never deletes runs automatically; deleting in the UI is
+the equivalent of `Remove-Item -Recurse output/runs/<id>` and is
+irreversible.
 
 ## Empty / error states
 

@@ -26,6 +26,7 @@ class AppState:
     _lock: RLock = field(default_factory=RLock, repr=False)
     _repo: "FilesystemRunRepo | None" = field(default=None, repr=False)
     _runner: "JobRunner | None" = field(default=None, repr=False)
+    _estate: "object | None" = field(default=None, repr=False)
 
     @property
     def repo(self) -> "FilesystemRunRepo":
@@ -44,6 +45,15 @@ class AppState:
 
                 self._runner = JobRunner(self.repo, env_file=self.env_file)
             return self._runner
+
+    @property
+    def estate(self):  # type: ignore[override]
+        with self._lock:
+            if self._estate is None:
+                from .estate import EstateIndex
+
+                self._estate = EstateIndex(self.repo)
+            return self._estate
 
 
 def get_state() -> AppState:  # overridden via app.dependency_overrides

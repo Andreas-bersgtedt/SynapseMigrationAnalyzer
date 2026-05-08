@@ -181,6 +181,10 @@ class JobRunner:
                 started_at=datetime.now(timezone.utc),
                 config_hash=hash_config(cfg),
                 modules=[ModuleStatus(name=m, state="queued") for m in modules],
+                tenant_id=cfg.azure.tenant_id,
+                subscription_id=cfg.azure.subscription_id,
+                resource_group=cfg.azure.resource_group,
+                workspace_name=cfg.azure.workspace_name,
             )
             self.repo.create(meta)
             self._cancel[meta.id] = threading.Event()

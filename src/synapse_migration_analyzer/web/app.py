@@ -18,6 +18,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from .. import __version__
 from .api import config as config_api
 from .api import diff as diff_api
+from .api import estate as estate_api
 from .api import events as events_api
 from .api import healthz as healthz_api
 from .api import modules as modules_api
@@ -96,6 +97,7 @@ def create_app(
     app.include_router(events_api.router, prefix="/api/runs")
     app.include_router(modules_api.router, prefix="/api/runs")
     app.include_router(diff_api.router, prefix="/api/runs")
+    app.include_router(estate_api.router, prefix="/api/estate")
 
     # JSON error envelope so the SPA gets a predictable shape.
     @app.exception_handler(RequestValidationError)

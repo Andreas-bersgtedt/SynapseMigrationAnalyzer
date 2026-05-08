@@ -35,12 +35,14 @@ Azure
   Client ID            [ 00000000-0000-0000-0000-000000000000 ]
   Client secret        [ ••••••••  (leave empty to keep) ]
   Subscription ID      [ 00000000-0000-0000-0000-000000000000 ]
-  Resource group       [ rg-synapse-prod                       ]
-  Workspace name       [ syn-prod-eu                           ]
   Dedicated pool       [ dwpool01                              ]   (optional)
 
 SQL
   ODBC driver          [ ODBC Driver 18 for SQL Server         ]
+
+Synapse workspace                                          [ Discover workspaces ] [ Refresh list ]
+  Workspace            [ syn-prod-eu (rg-synapse-prod, westeurope) — current  v ]
+                       └─ "Enter manually…" reverts to plain text fields
 
 [ Save ]    [ Validate (fields) ]    [ Validate access (live) ]
 
@@ -73,9 +75,11 @@ Validation
 | **Client ID**     | `AZURE_CLIENT_ID`           | The service principal app id. |
 | **Client secret** | `AZURE_CLIENT_SECRET`       | Password input. **Leave empty to keep the existing value** — the secret is never sent back to the browser. |
 | **Subscription ID** | `AZURE_SUBSCRIPTION_ID`   | The subscription that owns the Synapse workspace. |
-| **Resource group** | `AZURE_RESOURCE_GROUP`     | Where the workspace lives. |
-| **Workspace name** | `AZURE_WORKSPACE_NAME`     | The Synapse workspace short name (not the full URL). |
-| **Dedicated pool** | `AZURE_DEDICATED_POOL`     | Optional. When set, the analyzer focuses on a single pool; otherwise it enumerates all pools in the workspace. |
+| **Dedicated pool** | `SYNAPSE_DEDICATED_POOL`   | Optional. When set, the analyzer focuses on a single pool; otherwise it enumerates all pools in the workspace. |
+
+The **Synapse workspace** card (resource group + workspace name) is
+populated separately — see [Synapse workspace selector](#synapse-workspace-selector)
+below.
 
 ### SQL section
 
@@ -119,16 +123,45 @@ Live checks performed (when **Validate access (live)** is clicked):
 | Data plane     | `Serverless SQL SELECT 1 (...)`      | TCP + login + query on the built-in serverless endpoint. |
 | Data plane     | `Dedicated SQL SELECT 1 (...)`       | Same against the dedicated pool — only when `SYNAPSE_DEDICATED_POOL` is set. |
 
+### Accessible workspaces table
+
+When the live validation succeeds, the page caches the list of
+Synapse workspaces the SP can read. The selector above the form
+uses the same list — pick a workspace and click **Save** to switch.
+The validation card no longer renders a "Use this" column; it just
+shows the count and points back to the selector.
+
+### Synapse workspace selector
+
+The **Synapse workspace** card replaces the static **Resource group**
++ **Workspace name** text fields. It writes the same two `.env`
+keys (`SYNAPSE_RESOURCE_GROUP`, `SYNAPSE_WORKSPACE_NAME`) but lets you
+pick from a discovered list instead of typing.
+
+| Control                | Effect |
+| ---------------------- | ------ |
+| **Discover workspaces**| Calls `POST /api/config/validate?live=true` and caches the result. The dropdown appears once the call completes. Same call as **Validate access (live)** — you'll see the live validation results below the form. |
+| **Refresh list**       | Re-runs the discovery call. |
+| **Workspace** dropdown | Lists every workspace the SP can read in the configured subscription, formatted as `name (resource group, location)`. The currently saved workspace is marked `— current`. Picking a different one updates the form fields; click **Save** to persist. |
+| **Enter manually…**    | Last entry in the dropdown. Drops back to plain text fields when you need to type a workspace that the SP can't list (e.g. cross-tenant or first-time onboarding before the SP has Reader). The link **Pick from list** above the inputs jumps back to the dropdown. |
+
+**.env edits take effect on the next run.** The server reloads `.env`
+with `override=True` for every analyzer invocation, so a freshly
+saved workspace is honoured without restarting `sma serve`.
+
 ## Common tasks
 
 ### "Onboard a new workspace"
 
-1. Fill in **Tenant**, **Client**, **Client secret**, **Subscription**,
-   **Resource group**, **Workspace name**.
-2. Click **Save**, then **Validate access (live)**.
-3. When every row under **Control plane** and **Data plane** is green,
+1. Fill in **Tenant**, **Client**, **Client secret**, **Subscription**.
+2. Click **Discover workspaces** in the Synapse workspace card and
+   pick the target workspace from the dropdown. (If the SP can't yet
+   list workspaces, choose **Enter manually…** and type the resource
+   group and workspace name.)
+3. Click **Save**, then **Validate access (live)**.
+4. When every row under **Control plane** and **Data plane** is green,
    go to [09. Run page](09-run-page.md) and start a run.
-4. If a Data-plane check fails with `Login failed for user '<token-identified
+5. If a Data-plane check fails with `Login failed for user '<token-identified
    principal>'`, the SP needs to be added as a Synapse SQL login. For
    the serverless endpoint a single `CREATE LOGIN [<sp-name>] FROM
    EXTERNAL PROVIDER; CREATE USER [<sp-name>] FOR LOGIN [<sp-name>];`
@@ -149,6 +182,15 @@ on a Save if you only changed other fields.
 
 `sma doctor --json` lists the installed drivers. Copy the exact name
 into the **ODBC driver** field; click **Validate** to confirm.
+
+## Advanced environment variables
+
+Not exposed in the UI \u2014 set these in `.env` directly when needed.
+
+| Variable | Default | Effect |
+| -------- | ------- | ------ |
+| `SMA_STORAGE_INCLUDE_ALL` | unset | When set to `1` / `true` / `yes`, the **storage** module inventories every storage account in the configured subscription (legacy behaviour). When unset, only accounts attached to the workspace are inventoried \u2014 the workspace's default ADLS Gen2 plus any storage account referenced by a linked service. |
+| `SMA_OUTPUT_DIR` | `./output` | Where collector CSV / JSON / HTML artefacts are written. The Run page `Output dir` override takes precedence per-run. |
 
 ## Empty / error states
 

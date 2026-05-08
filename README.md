@@ -8,7 +8,7 @@ Python tooling that inventories and analyzes **Azure Synapse Analytics** workspa
 > - `spark_pools` — Apache Spark pool inventory & configuration, plus notebook and Spark-job-definition inventory
 > - `pipelines` — pipelines, linked services, datasets, triggers, integration runtimes, with activity-level Fabric-compatibility classification, plus rolling 7/14/28/90-day **run-history statistics** (executions, success rate, avg duration, avg MB moved per Copy/Dataflow run)
 > - `monitoring` — historical Azure Monitor metrics for dedicated SQL pools (DWU, queries, connections)
-> - `storage` — ADLS / Storage account inventory (workspace-default Gen2 flagged), Azure Monitor capacity metrics (UsedCapacity, BlobCapacity), and dedicated SQL pool size in MB / GB
+> - `storage` — ADLS / Storage account inventory scoped to the workspace (default ADLS Gen2 + linked-service references; set `SMA_STORAGE_INCLUDE_ALL=1` to scan every account in the subscription), Azure Monitor capacity metrics (UsedCapacity, BlobCapacity), and dedicated SQL pool size in MB / GB
 > - `fabric_mapping` — aggregates the above and produces Fabric Warehouse migration recommendations (collation, T-SQL surface, activity gaps, sizing hints)
 
 📘 **New here?** See the module-based [QUICKSTART.md](QUICKSTART.md).
@@ -52,7 +52,7 @@ A new CLI subcommand is registered in [cli.py](src/synapse_migration_analyzer/cl
   - `Reader` on the Synapse workspace (control plane).
   - **Synapse Artifact User** on the workspace for `analyze-pipelines` and `analyze-spark-pools` (notebooks / SJDs).
   - **Monitoring Reader** at the subscription / resource-group scope for `analyze-monitoring` and `analyze-storage` (capacity metrics).
-  - For `analyze-storage`: `Reader` on each storage account (or on the subscription / RG that contains it). The workspace's default ADLS Gen2 is auto-detected.
+  - For `analyze-storage`: `Reader` on each storage account attached to the workspace (default ADLS Gen2 + storage accounts referenced by linked services). Granting Reader at the subscription / RG scope is the simplest. Set `SMA_STORAGE_INCLUDE_ALL=1` to opt back into the legacy subscription-wide scan.
   - **Synapse SQL access** to each dedicated pool (granted via `CREATE USER [<sp>] FROM EXTERNAL PROVIDER` in the pool, plus role memberships such as `db_datareader`, `VIEW DATABASE STATE` for DMVs, and `VIEW DEFINITION` so the catalog exposes stored procedures and user-defined functions in `sys.objects` / `sys.sql_modules`).
 
 ## Setup

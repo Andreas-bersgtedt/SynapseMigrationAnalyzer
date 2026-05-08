@@ -478,3 +478,77 @@ export interface SecurityReport {
   findings: SecurityFinding[];
   errors?: string[];
 }
+
+// ---------------------------------------------------------------------------
+// Estate Overview (control-plane: GET /api/estate)
+// ---------------------------------------------------------------------------
+
+export interface EstateHistoryPoint {
+  run_id: string;
+  finished_at: string;
+  status: 'queued' | 'running' | 'ok' | 'failed' | 'cancelled';
+  readiness_score: number | null;
+  blocker_count: number;
+  warning_count: number;
+  actual_monthly_cost: number | null;
+}
+
+export interface EstateWorkspace {
+  key: string;
+  tenant_id: string | null;
+  subscription_id: string | null;
+  resource_group: string | null;
+  workspace_name: string;
+  run_count: number;
+  latest_run_id: string;
+  latest_status: 'queued' | 'running' | 'ok' | 'failed' | 'cancelled';
+  latest_finished_at: string;
+  modules_run: string[];
+  readiness_score: number | null;
+  readiness_bucket: string | null;
+  blocker_count: number;
+  warning_count: number;
+  info_count: number;
+  tsql_compatibility_pct: number | null;
+  projected_fabric_cu: number | null;
+  recommended_fabric_sku: string | null;
+  actual_monthly_cost: number | null;
+  actual_currency: string | null;
+  fabric_estimated_monthly_cost: number | null;
+  fabric_cost_delta_abs: number | null;
+  fabric_cost_delta_pct: number | null;
+  history: EstateHistoryPoint[];
+}
+
+export interface EstateTotals {
+  workspaces: number;
+  runs: number;
+  tenants: number;
+  subscriptions: number;
+  ready: number;
+  ready_with_effort: number;
+  blocked: number;
+  blockers_total: number;
+  tsql_compatibility_pct_avg: number | null;
+  projected_fabric_cu_total: number | null;
+  actual_monthly_cost_total: number | null;
+  fabric_estimated_monthly_cost_total: number | null;
+}
+
+export interface EstateTopBlocker {
+  area: string;
+  title: string;
+  fabric_action: string | null;
+  effort: string;
+  workspaces: number;
+  occurrences: number;
+  example_run_id: string | null;
+}
+
+export interface EstateReport {
+  generated_at: string;
+  totals: EstateTotals;
+  workspaces: EstateWorkspace[];
+  top_blockers: EstateTopBlocker[];
+}
+

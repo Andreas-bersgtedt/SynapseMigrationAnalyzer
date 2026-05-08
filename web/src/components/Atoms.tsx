@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { severityLabel } from "../lib/labels";
 
 export function StatCard(props: {
   label: string;
@@ -20,7 +21,7 @@ export function SeverityPill({ severity }: { severity: string }) {
     : severity === "warning" || severity === "needs_review" ? "warn"
     : severity === "info" || severity === "compatible" ? "ok"
     : "muted";
-  return <span className={`pill ${cls}`}>{severity}</span>;
+  return <span className={`pill ${cls}`} title={severity}>{severityLabel(severity)}</span>;
 }
 
 export function ScorePill({ score }: { score: number }) {

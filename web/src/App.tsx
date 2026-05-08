@@ -7,8 +7,10 @@ import Configuration from "./pages/Configuration";
 import Cost from "./pages/Cost";
 import Dashboard from "./pages/Dashboard";
 import Delta from "./pages/Delta";
+import EstateOverview from "./pages/EstateOverview";
 import Governance from "./pages/Governance";
 import Help from "./pages/Help";
+import PrintReport from "./pages/PrintReport";
 import Recommendations from "./pages/Recommendations";
 import Run from "./pages/Run";
 import RunDiff from "./pages/RunDiff";
@@ -29,7 +31,8 @@ const STATIC_NAV = [
 ];
 
 const CONTROL_PLANE_NAV = [
-  { to: "/", label: "Dashboard", end: true },
+  { to: "/", label: "Overview", end: true },
+  { to: "/dashboard", label: "Dashboard" },
   { to: "/code-objects", label: "Code objects" },
   { to: "/recommendations", label: "Recommendations" },
   { to: "/runbook", label: "Runbook" },
@@ -78,7 +81,14 @@ export default function App() {
       </header>
       <main className="content">
         <Routes>
-          <Route path="/" element={<Dashboard />} />
+          {mode === "control-plane" ? (
+            <>
+              <Route path="/" element={<EstateOverview />} />
+              <Route path="/dashboard" element={<Dashboard />} />
+            </>
+          ) : (
+            <Route path="/" element={<Dashboard />} />
+          )}
           <Route path="/code-objects" element={<CodeObjects />} />
           <Route path="/recommendations" element={<Recommendations />} />
           <Route path="/runbook" element={<Runbook />} />
@@ -94,6 +104,7 @@ export default function App() {
               <Route path="/runs" element={<RunsHistory />} />
               <Route path="/diff" element={<RunDiff />} />
               <Route path="/configuration" element={<Configuration />} />
+              <Route path="/report/print" element={<PrintReport />} />
             </>
           )}
         </Routes>

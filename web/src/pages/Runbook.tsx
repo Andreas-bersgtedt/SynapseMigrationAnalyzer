@@ -3,6 +3,7 @@ import { loadFabricMapping } from "../api/loader";
 import { useAsync } from "../hooks/useAsync";
 import { Empty, SeverityPill } from "../components/Atoms";
 import HelpLink from "../components/HelpLink";
+import { effortLabel, phaseLabel } from "../lib/labels";
 
 export default function Runbook() {
   const { data, loading } = useAsync(loadFabricMapping);
@@ -27,7 +28,7 @@ export default function Runbook() {
       <h1>Migration runbook <HelpLink slug="07-runbook" /></h1>
       {Array.from(byPhase.entries()).map(([phase, steps]) => (
         <section className="section" key={phase}>
-          <h2>{phase}</h2>
+          <h2 title={phase}>{phaseLabel(phase)}</h2>
           <table>
             <thead>
               <tr>
@@ -54,7 +55,7 @@ export default function Runbook() {
                     </details>
                   </td>
                   <td><SeverityPill severity={s.severity} /></td>
-                  <td>{s.effort}</td>
+                  <td title={s.effort}>{effortLabel(s.effort)}</td>
                   <td className="small muted">{s.target}</td>
                 </tr>
               ))}

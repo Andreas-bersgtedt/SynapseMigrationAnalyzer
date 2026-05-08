@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import re
 from typing import Iterator
 
 from azure.mgmt.storage import StorageManagementClient
@@ -12,6 +14,15 @@ from ...config import AzureConfig
 from .models import StorageAccountInventory
 
 log = logging.getLogger(__name__)
+
+
+def _include_all_default() -> bool:
+    """Honour ``SMA_STORAGE_INCLUDE_ALL`` to opt out of workspace filtering."""
+    val = os.getenv("SMA_STORAGE_INCLUDE_ALL", "").strip().lower()
+    return val in ("1", "true", "yes", "on")
+
+
+_ACCOUNT_NAME_RE = re.compile(r"[a-z0-9]{3,24}")
 
 
 class StorageArmClient:
@@ -48,28 +59,38 @@ class StorageArmClient:
 
     # ------------------------------------------------------------------ accounts
     def list_storage_accounts(self) -> Iterator[StorageAccountInventory]:
-        """Yield every storage account discoverable for this credential.
+        """Yield storage accounts attached to this Synapse workspace.
 
-        Service principals are commonly granted Reader on a single resource
-        group rather than the whole subscription, in which case the
-        subscription-wide ``list()`` call returns an empty page (sometimes
-        without error). To stay useful we try in this order:
+        Default behaviour (workspace-scoped):
 
-        1. Subscription-wide ``list()``.
-        2. ``list_by_resource_group(workspace_rg)`` — the workspace's own RG.
-        3. ``get_properties(default_rg, default_account)`` — the workspace's
-           default ADLS Gen2, by parsing its ``id`` from the workspace.
+        1. The workspace's default ADLS Gen2 account.
+        2. Storage accounts referenced by the workspace's linked services
+           (AzureBlobFS / AzureBlobStorage / AzureDataLakeStore* URIs).
+
+        Set ``SMA_STORAGE_INCLUDE_ALL=1`` to fall back to the legacy
+        behaviour and inventory every storage account discoverable to the
+        credential (subscription scope, then workspace RG, then default
+        ADLS as a last resort). Useful for governance audits where you
+        want to spot orphaned accounts even if no linked service points
+        at them.
 
         Duplicates (matched by lowercase resource id) are filtered out.
         """
         default_account, default_filesystem, default_rg = self._workspace_default_account_details()
         ws_rg = self._azure.resource_group
+        include_all = _include_all_default()
+        attached_names = (
+            None if include_all else self._attached_account_names(default_account)
+        )
 
         seen: set[str] = set()
 
         def _emit(acct) -> StorageAccountInventory | None:
             rid = (getattr(acct, "id", None) or "").lower()
             if not rid or rid in seen:
+                return None
+            if attached_names is not None and acct.name.lower() not in attached_names:
+                # Workspace-scoped mode: skip accounts the workspace doesn't reference.
                 return None
             seen.add(rid)
             sku = getattr(acct, "sku", None)
@@ -127,15 +148,58 @@ class StorageArmClient:
                 log.warning("get_properties(%s, %s) failed: %s", default_rg, default_account, exc)
 
         if not seen:
-            log.warning(
-                "No storage accounts discovered for subscription %s. "
-                "The credential likely lacks Microsoft.Storage/storageAccounts/read at subscription "
-                "or resource-group scope. Grant Reader on the subscription (or at least on the "
-                "workspace RG and the default ADLS RG) and retry.",
-                self._azure.subscription_id,
-            )
+            if attached_names is not None:
+                log.warning(
+                    "No storage accounts discovered for workspace %s/%s. "
+                    "Either the workspace has no default ADLS Gen2 and no storage-backed "
+                    "linked services, or the credential lacks Microsoft.Storage/storageAccounts/read "
+                    "on the relevant resource groups. Set SMA_STORAGE_INCLUDE_ALL=1 to include every "
+                    "account in the subscription.",
+                    self._azure.resource_group,
+                    self._azure.workspace_name,
+                )
+            else:
+                log.warning(
+                    "No storage accounts discovered for subscription %s. "
+                    "The credential likely lacks Microsoft.Storage/storageAccounts/read at subscription "
+                    "or resource-group scope. Grant Reader on the subscription (or at least on the "
+                    "workspace RG and the default ADLS RG) and retry.",
+                    self._azure.subscription_id,
+                )
 
     # ------------------------------------------------------------------ helpers
+    def _attached_account_names(self, default_account: str | None) -> set[str]:
+        """Build the set of storage account names attached to the workspace.
+
+        Includes the workspace's default ADLS Gen2 plus any account
+        referenced by a linked service. All names are lower-cased.
+        """
+        names: set[str] = set()
+        if default_account:
+            names.add(default_account.lower())
+
+        # Pull linked-service payloads via the existing security ARM client
+        # so we don't duplicate the Artifacts plumbing.
+        try:
+            from ..security.arm_client import SecurityArmClient
+        except ImportError:
+            return names
+        try:
+            sec = SecurityArmClient(self._azure)
+            payloads = sec.iter_linked_service_payloads()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("could not enumerate linked services for storage filter: %s", exc)
+            return names
+
+        for payload in payloads:
+            for n in _extract_account_names_from_linked_service(payload):
+                names.add(n.lower())
+
+        log.info(
+            "Workspace %s/%s references %d storage account(s) via default ADLS + linked services",
+            self._azure.resource_group, self._azure.workspace_name, len(names),
+        )
+        return names
     def _workspace_default_account_details(self) -> tuple[str | None, str | None, str | None]:
         """Return (account_name, filesystem, resource_group) for the workspace default ADLS Gen2."""
         rg = self._azure.resource_group
@@ -166,3 +230,71 @@ class StorageArmClient:
             except (ValueError, IndexError):
                 default_rg = None
         return account_name, filesystem, default_rg
+
+
+# ---------------------------------------------------------------------------
+# Linked-service → storage account extraction
+# ---------------------------------------------------------------------------
+
+# Hosts that identify Azure Storage endpoints. The leading sub-domain is the
+# account name (e.g. ``acct.dfs.core.windows.net`` → ``acct``).
+_STORAGE_HOST_SUFFIXES = (
+    ".dfs.core.windows.net",
+    ".blob.core.windows.net",
+    ".file.core.windows.net",
+    ".queue.core.windows.net",
+    ".table.core.windows.net",
+    ".dfs.core.usgovcloudapi.net",
+    ".blob.core.usgovcloudapi.net",
+    ".dfs.core.chinacloudapi.cn",
+    ".blob.core.chinacloudapi.cn",
+)
+
+
+def _extract_account_names_from_linked_service(payload: dict) -> set[str]:
+    """Best-effort: pull storage account names out of a linked-service payload.
+
+    Looks at the common Synapse linked-service types (AzureBlobFS,
+    AzureBlobStorage, AzureDataLakeStore, AzureDataLakeStorageGen2). Walks
+    the typeProperties dict so we tolerate SDK shape changes.
+    """
+    out: set[str] = set()
+    props = ((payload or {}).get("properties") or {})
+    type_props = (props.get("typeProperties") or {})
+    if not isinstance(type_props, dict):
+        return out
+
+    def _walk(node: object) -> None:
+        if isinstance(node, str):
+            _scan_string(node, out)
+        elif isinstance(node, dict):
+            for v in node.values():
+                _walk(v)
+        elif isinstance(node, (list, tuple)):
+            for v in node:
+                _walk(v)
+
+    _walk(type_props)
+    return out
+
+
+def _scan_string(value: str, out: set[str]) -> None:
+    """Pull account names out of URLs and connection strings."""
+    if not value:
+        return
+    lowered = value.lower()
+    # Endpoint URLs: https://<acct>.dfs.core.windows.net/...
+    for suffix in _STORAGE_HOST_SUFFIXES:
+        idx = lowered.find(suffix)
+        if idx <= 0:
+            continue
+        # Walk back from the suffix to the start of the host segment.
+        start = idx - 1
+        while start >= 0 and (lowered[start].isalnum()):
+            start -= 1
+        candidate = lowered[start + 1: idx]
+        if _ACCOUNT_NAME_RE.fullmatch(candidate):
+            out.add(candidate)
+    # Connection-string AccountName=acct;
+    for m in re.finditer(r"accountname\s*=\s*([a-z0-9]{3,24})", lowered):
+        out.add(m.group(1))

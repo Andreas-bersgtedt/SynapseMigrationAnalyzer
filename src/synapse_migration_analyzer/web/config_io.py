@@ -20,6 +20,7 @@ from .schemas import (
     AzureConfigPublic,
     ConfigCheck,
     SqlConfigPublic,
+    WorkspaceSummary,
 )
 
 log = logging.getLogger(__name__)
@@ -151,14 +152,19 @@ _REQUIRED_LIVE = (
 )
 
 
-def validate_config_live(env_file: Path) -> list[ConfigCheck]:
+def validate_config_live(env_file: Path) -> tuple[list[ConfigCheck], list[WorkspaceSummary]]:
     """Field checks + live connectivity checks (Azure control plane + Synapse data plane).
 
     Each live check is wrapped: a connection failure becomes ``ok=False`` rather
     than raising. The intent is to give the SPA a clear PASS/FAIL grid that
     distinguishes 'env vars OK' from 'data plane RBAC is granted'.
+
+    Also enumerates Synapse workspaces visible to the service principal at the
+    configured subscription scope (returns ``[]`` if the SP lacks subscription-
+    level read or the SDK call fails).
     """
     checks = validate_config(env_file)
+    workspaces: list[WorkspaceSummary] = []
     values = dotenv_values(env_file) if env_file.exists() else {}
     if any(not values.get(k) for k in _REQUIRED_LIVE):
         checks.append(ConfigCheck(
@@ -167,7 +173,7 @@ def validate_config_live(env_file: Path) -> list[ConfigCheck]:
             detail="skipped — fill in all required fields and Save before running live checks",
             category="Control plane",
         ))
-        return checks
+        return checks, workspaces
 
     tenant = values["AZURE_TENANT_ID"]
     client_id = values["AZURE_CLIENT_ID"]
@@ -187,7 +193,7 @@ def validate_config_live(env_file: Path) -> list[ConfigCheck]:
         checks.append(ConfigCheck(
             name="AAD credential", ok=False, detail=str(exc), category="Control plane",
         ))
-        return checks
+        return checks, workspaces
 
     # --- Control plane -----------------------------------------------------
     arm_token = None
@@ -215,6 +221,28 @@ def validate_config_live(env_file: Path) -> list[ConfigCheck]:
             checks.append(ConfigCheck(
                 name="Synapse workspace (ARM Reader)", ok=False,
                 detail=str(exc), category="Control plane",
+            ))
+
+        # Enumerate every Synapse workspace the SP can see in the subscription.
+        # Best-effort: a missing role at subscription scope yields an empty
+        # list rather than a hard error.
+        try:
+            from azure.mgmt.synapse import SynapseManagementClient
+            mgmt = SynapseManagementClient(cred, subscription)
+            for ws in mgmt.workspaces.list():
+                workspaces.append(_workspace_summary(ws, current_workspace=workspace))
+            checks.append(ConfigCheck(
+                name="Synapse workspaces visible (subscription Reader)",
+                ok=True,
+                detail=f"{len(workspaces)} workspace(s) visible to the SP",
+                category="Control plane",
+            ))
+        except Exception as exc:  # noqa: BLE001
+            checks.append(ConfigCheck(
+                name="Synapse workspaces visible (subscription Reader)",
+                ok=False,
+                detail=str(exc),
+                category="Control plane",
             ))
 
     # --- Data plane: Synapse Artifacts (pipelines RBAC) --------------------
@@ -271,7 +299,32 @@ def validate_config_live(env_file: Path) -> list[ConfigCheck]:
                 ok=ok, detail=detail, category="Data plane",
             ))
 
-    return checks
+    return checks, workspaces
+
+
+def _workspace_summary(ws, current_workspace: str | None) -> WorkspaceSummary:
+    """Adapt an azure-mgmt-synapse Workspace model to our DTO."""
+    arm_id = getattr(ws, "id", "") or ""
+    # ARM ids look like /subscriptions/<sub>/resourceGroups/<rg>/providers/...
+    parts = arm_id.split("/")
+    rg = ""
+    if "resourceGroups" in parts:
+        try:
+            rg = parts[parts.index("resourceGroups") + 1]
+        except IndexError:
+            rg = ""
+    endpoints = getattr(ws, "connectivity_endpoints", None) or {}
+    sql_endpoint = endpoints.get("sql") if isinstance(endpoints, dict) else None
+    sql_on_demand = endpoints.get("sqlOnDemand") if isinstance(endpoints, dict) else None
+    name = getattr(ws, "name", "") or ""
+    return WorkspaceSummary(
+        name=name,
+        resource_group=rg,
+        location=getattr(ws, "location", None),
+        sql_endpoint=sql_endpoint,
+        sql_on_demand_endpoint=sql_on_demand,
+        is_current=bool(current_workspace) and name == current_workspace,
+    )
 
 
 def _try_sql_select1(

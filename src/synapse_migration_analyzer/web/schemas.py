@@ -35,6 +35,14 @@ class RunMeta(BaseModel):
     modules: list[ModuleStatus] = Field(default_factory=list)
     readiness_score: float | None = None
     errors_count: int = 0
+    # Workspace identity captured at run-start so the Estate Overview can
+    # group runs across workspaces / subscriptions / tenants without
+    # re-reading every module artefact. Optional for back-compat with
+    # runs created before these fields were persisted.
+    tenant_id: str | None = None
+    subscription_id: str | None = None
+    resource_group: str | None = None
+    workspace_name: str | None = None
 
 
 class StartRunRequest(BaseModel):
@@ -117,9 +125,19 @@ class ConfigCheck(BaseModel):
     category: str | None = None
 
 
+class WorkspaceSummary(BaseModel):
+    name: str
+    resource_group: str
+    location: str | None = None
+    sql_endpoint: str | None = None
+    sql_on_demand_endpoint: str | None = None
+    is_current: bool = False
+
+
 class ValidateConfigResponse(BaseModel):
     ok: bool
     checks: list[ConfigCheck]
+    workspaces: list[WorkspaceSummary] | None = None
 
 
 class SaveConfigResponse(BaseModel):
@@ -136,3 +154,82 @@ class RunDiffEnvelope(BaseModel):
     base: str
     head: str
     delta: dict[str, Any]
+
+
+# ---------------------------------------------------------------------------
+# Estate Overview (cross-workspace, cross-time aggregation)
+# ---------------------------------------------------------------------------
+
+
+class EstateHistoryPoint(BaseModel):
+    """One run's contribution to a workspace's timeline."""
+    run_id: str
+    finished_at: datetime
+    status: RunState
+    readiness_score: float | None = None
+    blocker_count: int = 0
+    warning_count: int = 0
+    actual_monthly_cost: float | None = None
+
+
+class EstateWorkspace(BaseModel):
+    """A single workspace as seen across all of its runs."""
+    key: str
+    tenant_id: str | None = None
+    subscription_id: str | None = None
+    resource_group: str | None = None
+    workspace_name: str
+    run_count: int
+    latest_run_id: str
+    latest_status: RunState
+    latest_finished_at: datetime
+    modules_run: list[str] = Field(default_factory=list)
+    # Latest-run metrics
+    readiness_score: float | None = None
+    readiness_bucket: str | None = None
+    blocker_count: int = 0
+    warning_count: int = 0
+    info_count: int = 0
+    tsql_compatibility_pct: float | None = None
+    # Capacity / forecast (fabric_mapping)
+    projected_fabric_cu: float | None = None
+    recommended_fabric_sku: str | None = None
+    # Spend / cost (cost module)
+    actual_monthly_cost: float | None = None
+    actual_currency: str | None = None
+    fabric_estimated_monthly_cost: float | None = None
+    fabric_cost_delta_abs: float | None = None
+    fabric_cost_delta_pct: float | None = None
+    history: list[EstateHistoryPoint] = Field(default_factory=list)
+
+
+class EstateTotals(BaseModel):
+    workspaces: int = 0
+    runs: int = 0
+    tenants: int = 0
+    subscriptions: int = 0
+    ready: int = 0
+    ready_with_effort: int = 0
+    blocked: int = 0
+    blockers_total: int = 0
+    tsql_compatibility_pct_avg: float | None = None
+    projected_fabric_cu_total: float | None = None
+    actual_monthly_cost_total: float | None = None
+    fabric_estimated_monthly_cost_total: float | None = None
+
+
+class EstateTopBlocker(BaseModel):
+    area: str
+    title: str
+    fabric_action: str | None = None
+    effort: str = "medium"
+    workspaces: int = 0
+    occurrences: int = 0
+    example_run_id: str | None = None
+
+
+class EstateReport(BaseModel):
+    generated_at: datetime
+    totals: EstateTotals
+    workspaces: list[EstateWorkspace] = Field(default_factory=list)
+    top_blockers: list[EstateTopBlocker] = Field(default_factory=list)

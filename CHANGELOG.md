@@ -6,7 +6,91 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_No changes yet._
+## [2.4.0] - 2026-05-08
+
+### Added
+- **Export PDF report (control plane).** New **Export PDF report**
+  button on the Estate overview toolbar opens a print-friendly
+  `/report/print` route in a new tab and auto-triggers the browser's
+  print dialog. The report consolidates the estate overview totals,
+  workspaces table, and estate-wide top blockers, then emits one
+  page per workspace (page-break before each) with readiness /
+  T-SQL / recommendations / SKU stat cards, top blockers, the full
+  recommendations list, the cost summary (Synapse vs modeled Fabric,
+  Δ abs / Δ %), and the runbook. Backed by a new
+  `apiGetRunModule<T>(runId, name)` loader helper that hits the
+  existing `/api/runs/{id}/modules/{slug}` endpoint, plus a
+  print-only stylesheet (A4, hidden topbar/footer/nav, visible pill
+  borders for B/W output). Browser print is used so no headless
+  Chromium / WeasyPrint dependency is added — pick **Save as PDF**
+  in the print dialog.
+- **Estate overview tab (control plane).** New default landing page in
+  control-plane mode (`sma serve --with-api`) that consolidates *every
+  run on disk* into a single estate-wide view. Multi-tenant aware:
+  workspaces are grouped by **tenant · subscription · resource
+  group**, and both **actual Synapse spend** and **projected Fabric
+  spend / CU** are surfaced side-by-side as clearly-labelled,
+  comparable columns. Includes hero totals (workspaces, runs,
+  tenants, subscriptions, ready/effort/blocked split, avg T-SQL %,
+  total CU and both monthly-cost dimensions), an estate readiness
+  trend chart, per-workspace sparkline of the last 50 runs (cap is
+  configurable via `SMA_ESTATE_MAX_HISTORY`), and an
+  estate-deduped *top blockers* table sorted by how many workspaces
+  each blocker hits. Backed by a new `EstateIndex` aggregator with
+  mtime-based caching and three new endpoints:
+  `GET /api/estate`, `GET /api/estate/workspaces/{key}`, and
+  `GET /api/estate/export.csv`. `RunMeta` now persists `tenant_id`,
+  `subscription_id`, `resource_group` and `workspace_name` so the
+  rollup stays accurate across re-runs and multi-tenant scans.
+  Dashboard moves from `/` to `/dashboard`; static-mode SPAs are
+  unchanged.
+- **Run page: smarter defaults.** The **Label** field now pre-fills with
+  the configured workspace name (`SYNAPSE_WORKSPACE_NAME`) on first load
+  so multi-workspace run histories stay readable; manual edits are
+  preserved (`labelEdited` guard). Every module \u2014 including
+  `fabric_validation` \u2014 is selected by default; uncheck the modules
+  you don't need rather than hunting for the missing ones.
+- **Configuration page: Synapse workspace selector.** The static
+  *Resource group* + *Workspace name* text fields are replaced with a
+  **Discover workspaces** button that hits
+  `POST /api/config/validate?live=true` and renders the result as a
+  dropdown (name + resource group + location, with the active workspace
+  marked `\u2014 current`). Picking a workspace updates the form fields
+  in-place; **Save** persists. An *Enter manually\u2026* fallback drops
+  back to plain text inputs when the SP can't list workspaces (e.g.
+  cross-tenant onboarding).
+- **Runs history: per-row Delete button.** Each row now offers a
+  **Delete** action with a `window.confirm` prompt. Backed by a new
+  `DELETE /api/runs/{id}/data` endpoint that removes the run folder via
+  `shutil.rmtree` and clears it from the in-memory event-counter map.
+  The endpoint refuses (`409 Conflict`) while the run is `queued` /
+  `running`. Deleting the active run clears `#run=<id>` so the next
+  load picks a different run.
+- **`SMA_STORAGE_INCLUDE_ALL` escape hatch.** The new workspace-scoped
+  storage scan (see *Changed*) can be reverted to the legacy
+  subscription-wide behaviour by setting `SMA_STORAGE_INCLUDE_ALL=1` in
+  `.env`. Useful when a linked-service URL the parser doesn't recognise
+  hides a storage account from the inventory.
+
+### Changed
+- **Storage inventory is now scoped to the workspace.** The `storage`
+  module no longer enumerates every account in the subscription. It
+  collects the workspace's default ADLS Gen2 plus any account whose
+  host appears in a Synapse linked-service payload (`*.dfs.core.windows.net`,
+  `*.blob.core.windows.net`, etc.) and inventories only those accounts.
+  This dramatically reduces noise on subscriptions shared with
+  non-Synapse workloads.
+- **Configuration page: Accessible workspaces table simplified.** The
+  redundant **Use this** column has been removed \u2014 the new dropdown
+  above the form is the canonical way to switch. The validation card
+  now shows only the count.
+
+### Fixed
+- **`load_dotenv()` now uses `override=True`.** Long-lived `sma serve`
+  processes correctly pick up Configuration edits to `.env` on the next
+  run without a manual restart. Previously the in-process environment
+  shadowed `.env` updates and the analyzer kept hitting the old
+  workspace.
 
 ## [2.3.0] - 2026-05-07
 

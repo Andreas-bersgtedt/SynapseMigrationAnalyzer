@@ -190,3 +190,22 @@ fieldset legend { color: var(--muted); padding: 0 6px; }
   border-left: 3px solid var(--border); background: var(--panel-2);
 }
 .markdown-body hr { border: 0; border-top: 1px solid var(--border); margin: 24px 0; }
+
+/* Print report */
+.print-only { display: none; }
+.report-page { padding: 12px 0; }
+.report-page h1 { margin: 0 0 4px; font-size: 22px; }
+.report-page h2 { margin: 16px 0 6px; font-size: 16px; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
+.report-section { page-break-inside: avoid; margin-bottom: 12px; }
+.report-workspace { page-break-before: always; padding-top: 12px; }
+@media print {
+  .topbar, .footer, .picker, nav.nav, .no-print { display: none !important; }
+  body, html, .layout, .content { background: white !important; color: black !important; }
+  .card { border: 1px solid #888 !important; box-shadow: none !important; }
+  table { font-size: 10pt; }
+  .pill { border: 1px solid #888 !important; }
+  .print-only { display: block; }
+  a { color: black !important; text-decoration: none !important; }
+  @page { size: A4; margin: 14mm 12mm; }
+}
+

@@ -124,6 +124,22 @@ class FilesystemRunRepo:
         with self._lock:
             self._write_meta(meta)
 
+    def delete(self, run_id: str) -> bool:
+        """Remove the on-disk directory for ``run_id``.
+
+        Returns ``True`` if a directory was removed, ``False`` if the run
+        did not exist. Path traversal is blocked by ``run_dir``.
+        """
+        import shutil
+
+        with self._lock:
+            run_dir = self.run_dir(run_id)
+            if not run_dir.exists():
+                return False
+            shutil.rmtree(run_dir)
+            self._event_counts.pop(run_id, None)
+            return True
+
     def update_module(
         self,
         run_id: str,

@@ -1,7 +1,8 @@
-import { useState } from "react";
-import { apiCancelRun, apiStartRun, setRunIdInHash } from "../api/loader";
+import { useEffect, useState } from "react";
+import { apiCancelRun, apiGetConfig, apiStartRun, setRunIdInHash } from "../api/loader";
 import { useSseProgress, type SseEvent } from "../hooks/useSseProgress";
 import HelpLink from "../components/HelpLink";
+import { moduleLabel, stateLabel } from "../lib/labels";
 
 const ALL_MODULES = [
   "dedicated_pools",
@@ -19,20 +20,31 @@ const ALL_MODULES = [
 
 export default function Run(): JSX.Element {
   const [selected, setSelected] = useState<Set<string>>(
-    new Set([
-      "dedicated_pools",
-      "serverless_pools",
-      "spark_pools",
-      "pipelines",
-      "monitoring",
-      "storage",
-      "fabric_mapping",
-    ]),
+    new Set(ALL_MODULES),
   );
   const [label, setLabel] = useState<string>("");
+  const [labelEdited, setLabelEdited] = useState<boolean>(false);
   const [runId, setRunId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const { events, done, error: sseError } = useSseProgress(runId);
+
+  useEffect(() => {
+    let cancelled = false;
+    apiGetConfig()
+      .then((cfg) => {
+        if (cancelled) return;
+        const ws = cfg.azure.workspace_name;
+        if (ws && !labelEdited) setLabel((prev) => (prev ? prev : ws));
+      })
+      .catch(() => {
+        /* ignore – label default is best-effort */
+      });
+    return () => {
+      cancelled = true;
+    };
+    // Only run once on mount; labelEdited guards future overwrites.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const toggle = (m: string) => {
     const next = new Set(selected);
@@ -73,13 +85,13 @@ export default function Run(): JSX.Element {
         <legend>Modules</legend>
         <div className="checkbox-grid">
           {ALL_MODULES.map((m) => (
-            <label key={m}>
+            <label key={m} title={m}>
               <input
                 type="checkbox"
                 checked={selected.has(m)}
                 onChange={() => toggle(m)}
               />
-              <code>{m}</code>
+              <span>{moduleLabel(m)}</span>
             </label>
           ))}
         </div>
@@ -88,7 +100,10 @@ export default function Run(): JSX.Element {
           <input
             type="text"
             value={label}
-            onChange={(e) => setLabel(e.target.value)}
+            onChange={(e) => {
+              setLabelEdited(true);
+              setLabel(e.target.value);
+            }}
             placeholder="e.g. dry-run before retire"
           />
         </label>
@@ -127,8 +142,8 @@ function ProgressList({ events }: { events: SseEvent[] }): JSX.Element {
         const cls = state === "ok" ? "ok" : state === "failed" ? "err" : state === "running" ? "warn" : "muted";
         return (
           <li key={mod}>
-            <span className={`pill ${cls}`}>{state}</span>{" "}
-            <code>{mod}</code>
+            <span className={`pill ${cls}`} title={state}>{stateLabel(state)}</span>{" "}
+            <span title={mod}>{moduleLabel(mod)}</span>
             {typeof ev.duration_ms === "number" && (
               <span className="muted"> {(ev.duration_ms / 1000).toFixed(1)}s</span>
             )}

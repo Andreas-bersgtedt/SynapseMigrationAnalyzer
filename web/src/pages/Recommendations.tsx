@@ -3,6 +3,7 @@ import { loadFabricMapping } from "../api/loader";
 import { useAsync } from "../hooks/useAsync";
 import { Empty, SeverityPill } from "../components/Atoms";
 import HelpLink from "../components/HelpLink";
+import { areaLabel, effortLabel } from "../lib/labels";
 
 const SEV_ORDER = { blocker: 0, warning: 1, info: 2 } as Record<string, number>;
 
@@ -55,7 +56,7 @@ export default function Recommendations() {
         </select>
         <select value={area} onChange={(e) => setArea(e.target.value)}>
           <option value="">All areas</option>
-          {areas.map((a) => <option key={a} value={a}>{a}</option>)}
+          {areas.map((a) => <option key={a} value={a}>{areaLabel(a)}</option>)}
         </select>
         <span className="muted small">
           {filtered.length} / {data.recommendations.length}
@@ -73,8 +74,8 @@ export default function Recommendations() {
           {filtered.map((r) => (
             <tr key={r.id}>
               <td><SeverityPill severity={r.severity} /></td>
-              <td>{r.effort}</td>
-              <td><code className="small">{r.area}</code></td>
+              <td title={r.effort}>{effortLabel(r.effort)}</td>
+              <td className="small" title={r.area}>{areaLabel(r.area)}</td>
               <td className="small muted">{r.target}</td>
               <td>
                 <details>

@@ -2,6 +2,7 @@ import { loadFabricMapping, loadPipelines, loadServerless, loadStorage, detectMo
 import { useAsync } from "../hooks/useAsync";
 import { Empty, PctPill, ScorePill, SeverityPill, StatCard } from "../components/Atoms";
 import HelpLink from "../components/HelpLink";
+import { areaLabel, effortLabel, moduleLabel } from "../lib/labels";
 import type { Recommendation, Severity, ModuleSummary } from "../types";
 
 function fmtNum(n: number | null | undefined, digits = 0): string {
@@ -155,8 +156,8 @@ export default function Dashboard() {
               {rd.top_blockers.map((b: Recommendation) => (
                 <tr key={b.id}>
                   <td><SeverityPill severity={b.severity} /></td>
-                  <td>{b.effort}</td>
-                  <td><code>{b.area}</code></td>
+                  <td title={b.effort}>{effortLabel(b.effort)}</td>
+                  <td className="small" title={b.area}>{areaLabel(b.area)}</td>
                   <td>{b.title}</td>
                   <td className="small muted">{b.fabric_action}</td>
                 </tr>
@@ -179,7 +180,7 @@ export default function Dashboard() {
           <tbody>
             {fm.inputs.map((i: ModuleSummary) => (
               <tr key={i.module}>
-                <td><code>{i.module}</code></td>
+                <td title={i.module}>{moduleLabel(i.module)}</td>
                 <td className="small muted">{i.source_file}</td>
                 <td className="small">
                   {Object.entries(i.counts || {})
