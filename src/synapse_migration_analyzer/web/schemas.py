@@ -16,6 +16,18 @@ RunState = Literal["queued", "running", "ok", "failed", "cancelled"]
 from ..modules import KNOWN_MODULES  # re-exported below
 
 
+class ModuleProgress(BaseModel):
+    """Latest sub-step counters for a running module.
+
+    Persisted on :class:`ModuleStatus` so the runs-history view can show
+    in-flight progress without replaying the full SSE stream.
+    """
+    current: int = 0
+    total: int = 0
+    label: str | None = None
+    message: str | None = None
+
+
 class ModuleStatus(BaseModel):
     name: str
     state: ModuleState = "queued"
@@ -23,6 +35,7 @@ class ModuleStatus(BaseModel):
     finished_at: datetime | None = None
     duration_ms: int | None = None
     error: str | None = None
+    progress: ModuleProgress | None = None
 
 
 class RunMeta(BaseModel):

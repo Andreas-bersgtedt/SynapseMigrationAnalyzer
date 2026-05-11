@@ -35,9 +35,40 @@ equivalent Fabric CU-hours figure via :data:`DIU_TO_CU_HOURS` (default 1.5).
 This is a *heuristic* placeholder — Microsoft does not publish a fixed
 DIU→CU multiplier; verify with the current Fabric capacity sizing
 guidance before quoting the number to customers.
+
+vCore-seconds → Fabric CU-seconds (Mapping Data Flows)
+------------------------------------------------------
+
+Mapping Data Flow (``ExecuteDataFlow``) activities don't bill in DIU-hours —
+they spin up a managed Spark cluster on the Azure Integration Runtime.
+Rather than trust the service-side ``billingReference`` (which is a
+post-billing rollup that includes cluster spin-up and warm-pool reuse),
+we derive vCore-hours **from the actual Spark cluster that executed
+the data flow**:
+
+    vCore-hours per run = compute.coreCount × wall_clock_runtime_hours
+
+``compute.coreCount`` is captured at pipeline-parse time from each
+ExecuteDataFlow activity's static type-properties (supported values:
+8, 16, 32, 48, 80, 144, 272 — total cluster cores across driver +
+workers). When the activity uses the default autoresolve IR or a
+runtime expression for ``coreCount``, the aggregator falls back to
+``DEFAULT_DATAFLOW_CORES`` (smallest General Purpose: 8 vCores).
+
+Wall-clock runtime comes from ``activity_run.output.executionDuration``
+(seconds, published by ADF/Synapse once the cluster releases) and falls
+back to ``activity_run.duration_in_ms``.
+
+For a migration target of "rebuild the data flow as a Fabric Spark job",
+we project the consumed compute to Fabric Capacity Units assuming
+**1 vCore-second = 0.5 CU-second** (equivalently 1 vCore-hour =
+0.5 CU-hour). This matches the Fabric Spark billing factor at the time
+of writing; verify against current Fabric capacity guidance before
+quoting numbers.
 """
 from __future__ import annotations
 
+import json
 import math
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -61,6 +92,72 @@ DATA_MOVEMENT_ACTIVITY_TYPES: frozenset[str] = frozenset({
 # Heuristic: 1 Azure-IR DIU-hour ≈ 1.5 Fabric CU-hours. See module docstring
 # for caveats — this is a placeholder, not a Microsoft-published constant.
 DIU_TO_CU_HOURS: float = 1.5
+
+# Mapping Data Flow Spark compute → Fabric Spark job CU. 1 vCore-second
+# consumed on the Synapse-managed Spark cluster maps to 0.5 CU-second on
+# Fabric (equivalently 0.5 CU-hour per vCore-hour). See module docstring.
+VCORE_HOURS_TO_CU_HOURS: float = 0.5
+
+# Default Spark cluster size assumed for an ExecuteDataFlow activity that
+# uses the autoresolve Azure Integration Runtime without an explicit
+# ``compute.coreCount`` override. Per Microsoft docs the autoresolve IR
+# provisions the smallest General Purpose cluster (4 driver + 4 worker
+# cores = 8 vCores total). Override via ``aggregate_runs(default_dataflow_cores=...)``.
+DEFAULT_DATAFLOW_CORES: int = 8
+
+# Billing-unit aliases for vCore-time emitted by the Azure-IR Spark cluster
+# under Mapping Data Flow activities. We strip non-alphanumerics and lower-case
+# before matching, so payloads with units like ``vCore-Hour`` / ``Core Hours``
+# / ``vCoreHours`` all collapse to the same canonical token.
+_VCORE_UNITS: frozenset[str] = frozenset({
+    "corehour", "corehours",
+    "vcorehour", "vcorehours",
+})
+
+
+def _normalize_unit(value: Any) -> str:
+    """Lower-case + strip non-alphanumeric characters from a billing unit string."""
+    if not isinstance(value, str):
+        return ""
+    return "".join(ch for ch in value.lower() if ch.isalnum())
+
+
+def _billing_entries(activity_run: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return the ``billableDuration`` entries from an activity run, or [].
+
+    Tolerates real-world payload shapes: ``output``, ``billingReference``
+    and ``billableDuration`` can each arrive as a JSON-encoded string
+    instead of a parsed dict/list (the SDK preserves whatever the service
+    returned). A single billable-duration entry may also be sent as a dict
+    rather than a one-element list.
+    """
+    output = activity_run.get("output")
+    if isinstance(output, str):
+        try:
+            output = json.loads(output)
+        except (ValueError, TypeError):
+            return []
+    if not isinstance(output, dict):
+        return []
+    billing = output.get("billingReference")
+    if isinstance(billing, str):
+        try:
+            billing = json.loads(billing)
+        except (ValueError, TypeError):
+            return []
+    if not isinstance(billing, dict):
+        return []
+    entries = billing.get("billableDuration")
+    if isinstance(entries, str):
+        try:
+            entries = json.loads(entries)
+        except (ValueError, TypeError):
+            return []
+    if isinstance(entries, dict):
+        entries = [entries]
+    if not isinstance(entries, list):
+        return []
+    return [e for e in entries if isinstance(e, dict)]
 
 # Microsoft-published Fabric Pipelines meter rate for the Data Orchestration
 # engine type: 0.0056 CU-hours per non-copy activity run. (Copy activity is
@@ -87,6 +184,7 @@ class _RunBucket:
     durations_ms: list[float] = field(default_factory=list)
     data_bytes: list[int] = field(default_factory=list)  # per-run total bytes (only when >0 / known)
     diu_hours: list[float] = field(default_factory=list)  # per-run total DIU-hours (only when reported)
+    vcore_hours: list[float] = field(default_factory=list)  # per-run total vCore-hours (Mapping Data Flow Spark)
     # Non-copy activity run counts. ``observed_non_copy`` accumulates exact
     # counts from runs we sampled activity-runs for; ``unsampled_runs`` is
     # the count of runs in this window we did *not* fetch activity-runs for
@@ -163,25 +261,14 @@ def extract_diu_hours(activity_run: dict[str, Any]) -> float | None:
     ``unit == "DIUHours"``. Returns ``None`` when no DIU-hour entry is present
     (so callers can distinguish "not reported" from "0.0 DIU-hours").
     """
-    output = activity_run.get("output")
-    if not isinstance(output, dict):
-        return None
-    billing = output.get("billingReference")
-    if not isinstance(billing, dict):
-        return None
-    entries = billing.get("billableDuration")
-    # Some payloads wrap the single entry in a dict instead of a list — normalize.
-    if isinstance(entries, dict):
-        entries = [entries]
-    if not isinstance(entries, list):
+    entries = _billing_entries(activity_run)
+    if not entries:
         return None
 
     total: float = 0.0
     seen = False
     for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        unit = (entry.get("unit") or "").strip().lower()
+        unit = _normalize_unit(entry.get("unit"))
         if unit != "diuhours":
             continue
         duration = _safe_float(entry.get("duration"))
@@ -190,6 +277,81 @@ def extract_diu_hours(activity_run: dict[str, Any]) -> float | None:
         total += duration
         seen = True
     return total if seen else None
+
+
+def extract_vcore_hours(activity_run: dict[str, Any]) -> float | None:
+    """Best-effort extraction of vCore-hours consumed by an activity run.
+
+    Mapping Data Flow (``ExecuteDataFlow``) activities run on a managed
+    Spark cluster on the Azure Integration Runtime. Their billing reference
+    in ``output.billingReference.billableDuration[]`` looks like::
+
+        [
+          { "meterType": "General",          "duration": 0.066, "unit": "coreHour" },
+          { "meterType": "MemoryOptimized",  "duration": 0.50,  "unit": "vCoreHour" }
+        ]
+
+    where ``meterType`` reflects the Spark cluster shape (``General`` /
+    ``MemoryOptimized`` / ``ComputeOptimized``). We sum every entry whose
+    unit (case-insensitive) is a recognised vCore-time alias.
+
+    Returns ``None`` when no vCore-time entry is present (so callers can
+    distinguish "not reported" from "0.0 vCore-hours").
+    """
+    entries = _billing_entries(activity_run)
+    if not entries:
+        return None
+
+    total: float = 0.0
+    seen = False
+    for entry in entries:
+        unit = _normalize_unit(entry.get("unit"))
+        if unit not in _VCORE_UNITS:
+            continue
+        duration = _safe_float(entry.get("duration"))
+        if duration is None:
+            continue
+        total += duration
+        seen = True
+    return total if seen else None
+
+
+def extract_vcore_hours_from_runtime(
+    activity_run: dict[str, Any],
+    cores: int,
+) -> float | None:
+    """Derive vCore-hours from runtime statistics for an ExecuteDataFlow activity.
+
+    Reflects the Spark cluster that actually executed the data flow:
+    ``vCore-hours = cluster_cores × wall_clock_runtime_hours``.
+
+    Runtime is sourced from (in order of preference):
+        1. ``output.executionDuration`` (seconds) — published by ADF/Synapse
+           for ExecuteDataFlow once the cluster releases.
+        2. ``activity_run.duration_in_ms`` — activity wall-clock (includes
+           cluster acquisition time when cold).
+
+    Returns ``None`` when neither runtime signal is available or when
+    ``cores <= 0`` so callers can distinguish "not reported" from "0".
+    """
+    if not isinstance(cores, int) or cores <= 0:
+        return None
+    a_type = (activity_run.get("activity_type") or "").lower()
+    if a_type != "executedataflow":
+        return None
+    seconds: float | None = None
+    output = activity_run.get("output")
+    if isinstance(output, dict):
+        execd = _safe_float(output.get("executionDuration"))
+        if execd is not None and execd > 0:
+            seconds = execd
+    if seconds is None:
+        ms = _safe_float(activity_run.get("duration_in_ms"))
+        if ms is not None and ms > 0:
+            seconds = ms / 1000.0
+    if seconds is None:
+        return None
+    return cores * seconds / 3600.0
 
 
 def extract_data_bytes(activity_run: dict[str, Any]) -> int | None:
@@ -214,14 +376,29 @@ def extract_data_bytes(activity_run: dict[str, Any]) -> int | None:
 
     if a_type == "executedataflow":
         # Mapping data flows surface metrics under runStatus.metrics.<sink>.bytes.
+        # Real Synapse payloads sometimes serialise ``runStatus`` as a
+        # JSON-encoded string, so accept either shape.
         run_status = output.get("runStatus")
+        if isinstance(run_status, str):
+            try:
+                run_status = json.loads(run_status)
+            except (ValueError, TypeError):
+                run_status = None
         if isinstance(run_status, dict):
             metrics = run_status.get("metrics")
+            if isinstance(metrics, str):
+                try:
+                    metrics = json.loads(metrics)
+                except (ValueError, TypeError):
+                    metrics = None
             if isinstance(metrics, dict):
                 total = 0
                 seen = False
                 for sink_metrics in metrics.values():
                     if isinstance(sink_metrics, dict):
+                        # Some payloads use ``bytes`` (int) and some use
+                        # ``rowsWritten`` / ``progressState`` only. We only
+                        # claim a number when an explicit byte count exists.
                         b = _safe_int(sink_metrics.get("bytes"))
                         if b is not None:
                             total += b
@@ -245,6 +422,8 @@ def aggregate_runs(
     runs: Iterable[dict[str, Any]],
     activity_runs_by_run_id: dict[str, list[dict[str, Any]]] | None = None,
     non_copy_activity_counts: dict[str, int] | None = None,
+    dataflow_cores_by_pipeline_activity: dict[str, dict[str, int]] | None = None,
+    default_dataflow_cores: int = DEFAULT_DATAFLOW_CORES,
     now: datetime | None = None,
     windows_days: tuple[int, ...] = RUN_STATS_WINDOWS_DAYS,
 ) -> list[PipelineRunStats]:
@@ -252,6 +431,14 @@ def aggregate_runs(
 
     ``pipeline_names`` ensures every known pipeline gets a row (with zero
     counts) even if it has not run in the fetch window.
+
+    ``dataflow_cores_by_pipeline_activity`` provides static cluster sizes
+    (``pipeline_name -> activity_name -> total Spark vCores``) for
+    ExecuteDataFlow activities. When an ExecuteDataFlow activity-run is
+    sampled, vCore-hours are derived as ``cores × wall-clock runtime`` —
+    i.e. from the Spark cluster that executed the data flow — rather than
+    from the service-side billing reference. Activities not in the map use
+    ``default_dataflow_cores`` (defaults to ``DEFAULT_DATAFLOW_CORES``).
     """
     if now is None:
         now = datetime.now(timezone.utc)
@@ -259,6 +446,7 @@ def aggregate_runs(
         now = now.replace(tzinfo=timezone.utc)
     activity_runs_by_run_id = activity_runs_by_run_id or {}
     non_copy_activity_counts = non_copy_activity_counts or {}
+    dataflow_cores_by_pipeline_activity = dataflow_cores_by_pipeline_activity or {}
 
     # Pre-compute window cutoffs so each run is bucketed in O(W).
     sorted_windows = sorted(windows_days)
@@ -294,11 +482,13 @@ def aggregate_runs(
         run_id = run.get("run_id")
         bytes_for_run: int | None = None
         diu_for_run: float | None = None
+        vcore_for_run: float | None = None
         non_copy_for_run: int | None = None
         sampled = bool(run_id and run_id in activity_runs_by_run_id)
         if sampled:
             ars = activity_runs_by_run_id[run_id]
             non_copy_for_run = 0
+            cores_for_pipe = dataflow_cores_by_pipeline_activity.get(pname, {})
             for ar in ars:
                 if pname in pipelines_with_data_movement:
                     b = extract_data_bytes(ar)
@@ -307,6 +497,20 @@ def aggregate_runs(
                     d = extract_diu_hours(ar)
                     if d is not None:
                         diu_for_run = (diu_for_run or 0.0) + d
+                    a_type_lc = (ar.get("activity_type") or "").lower()
+                    if a_type_lc == "executedataflow":
+                        # Derive vCore-hours from the underlying Spark
+                        # cluster shape × wall-clock runtime, not from
+                        # billingReference. Cores come from the static
+                        # pipeline JSON (compute.coreCount); fall back to
+                        # the autoresolve-IR default when not specified.
+                        a_name = ar.get("activity_name") or ""
+                        cores = cores_for_pipe.get(a_name)
+                        if not isinstance(cores, int) or cores <= 0:
+                            cores = default_dataflow_cores
+                        v = extract_vcore_hours_from_runtime(ar, cores)
+                        if v is not None:
+                            vcore_for_run = (vcore_for_run or 0.0) + v
                 a_type = (ar.get("activity_type") or "").strip().lower()
                 if a_type and a_type not in _DATA_MOVEMENT_BILLED_TYPES:
                     non_copy_for_run += 1
@@ -328,6 +532,8 @@ def aggregate_runs(
                 bucket.data_bytes.append(bytes_for_run)
             if diu_for_run is not None:
                 bucket.diu_hours.append(diu_for_run)
+            if vcore_for_run is not None:
+                bucket.vcore_hours.append(vcore_for_run)
             if sampled and non_copy_for_run is not None:
                 bucket.observed_non_copy += non_copy_for_run
             else:
@@ -372,6 +578,22 @@ def aggregate_runs(
                     avg_diu_per_run = None
                     est_cu_hours = 0.0 if b.count == 0 else None
 
+            # Mapping Data Flow Spark compute (vCore-hours). Projected to
+            # Fabric Spark job CU-hours via VCORE_HOURS_TO_CU_HOURS (=0.5,
+            # i.e. 1 vCore-second = 0.5 CU-second).
+            avg_vcore_per_run: float | None = None
+            total_vcore: float | None = None
+            est_cu_hours_from_vcore: float | None = None
+            if has_dm:
+                if b.vcore_hours:
+                    total_vcore = sum(b.vcore_hours)
+                    avg_vcore_per_run = total_vcore / len(b.vcore_hours)
+                    est_cu_hours_from_vcore = total_vcore * VCORE_HOURS_TO_CU_HOURS
+                else:
+                    total_vcore = 0.0 if b.count == 0 else None
+                    avg_vcore_per_run = None
+                    est_cu_hours_from_vcore = 0.0 if b.count == 0 else None
+
             # Data Orchestration meter: 0.0056 CU-hr per non-copy activity
             # run. Use observed counts from sampled activity-runs (which
             # naturally include ForEach / Until / If fan-out) and fall back
@@ -395,6 +617,9 @@ def aggregate_runs(
                 avg_diu_hours_per_run=avg_diu_per_run,
                 total_diu_hours=total_diu,
                 est_cu_hours_from_diu=est_cu_hours,
+                avg_vcore_hours_per_run=avg_vcore_per_run,
+                total_vcore_hours=total_vcore,
+                est_cu_hours_from_vcore=est_cu_hours_from_vcore,
                 est_non_copy_activity_runs=est_orch_runs,
                 est_cu_hours_from_orchestration=est_orch_cu_hours,
             ))
@@ -439,3 +664,29 @@ def non_copy_activity_counts(activities: Iterable[dict[str, Any]]) -> dict[str, 
             continue
         counts[pname] += 1
     return dict(counts)
+
+
+def dataflow_cores_by_pipeline_activity(
+    activities: Iterable[dict[str, Any]],
+) -> dict[str, dict[str, int]]:
+    """Index ExecuteDataFlow activities by ``pipeline -> activity -> cores``.
+
+    Source: the static ``dataflow_cores`` field captured from each
+    ExecuteDataFlow activity's ``compute.coreCount`` at pipeline-parse
+    time. Activities without an explicit value (default autoresolve IR or
+    dynamic expression) are simply omitted from the map — callers should
+    fall back to ``DEFAULT_DATAFLOW_CORES`` for unmapped activities.
+    """
+    out: dict[str, dict[str, int]] = defaultdict(dict)
+    for a in activities:
+        if (a.get("type") or "") != "ExecuteDataFlow":
+            continue
+        pname = a.get("pipeline")
+        aname = a.get("name")
+        cores = a.get("dataflow_cores")
+        if not (pname and aname):
+            continue
+        if not isinstance(cores, int) or cores <= 0:
+            continue
+        out[pname][aname] = cores
+    return dict(out)

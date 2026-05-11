@@ -49,8 +49,16 @@ def _summarize(module: str, payload: dict[str, Any], path: Path) -> ModuleSummar
 class FabricMappingAnalyzer:
     """Reads JSON outputs of other modules from `cfg.output_dir` and emits a recommendation report."""
 
-    def __init__(self, cfg: AppConfig) -> None:
+    def __init__(
+        self,
+        cfg: AppConfig,
+        *,
+        progress: "ProgressReporter | None" = None,
+    ) -> None:
+        from ...progress import NullProgress
+
         self._cfg = cfg
+        self._progress = progress or NullProgress()
 
     def run(self) -> FabricMappingReport:
         report = FabricMappingReport(
@@ -58,11 +66,16 @@ class FabricMappingAnalyzer:
             generated_at=datetime.now(timezone.utc),
         )
 
+        # 1 step per upstream module load + 4 rollups (readiness, tsql, runbook,
+        # capacity projection).
+        self._progress.start(len(_INPUT_FILES) + 4, label="loading module outputs")
+
         loaded: dict[str, dict[str, Any]] = {}
         for module, fname in _INPUT_FILES.items():
             path = self._cfg.output_dir / fname
             if not path.is_file():
                 log.info("Skipping %s; %s not found.", module, path)
+                self._progress.step(label=f"{module} (missing)")
                 continue
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
@@ -71,6 +84,7 @@ class FabricMappingAnalyzer:
                 report.inputs.append(ModuleSummary(
                     module=module, source_file=str(path), notes=[f"load error: {exc}"]
                 ))
+                self._progress.step(label=f"{module} (error)")
                 continue
 
             loaded[module] = payload
@@ -80,6 +94,7 @@ class FabricMappingAnalyzer:
             except Exception as exc:  # noqa: BLE001
                 log.warning("Rules for %s failed: %s", module, exc)
                 report.inputs[-1].notes.append(f"rules error: {exc}")
+            self._progress.step(label=module)
 
         # v2 — readiness score.
         try:
@@ -90,6 +105,7 @@ class FabricMappingAnalyzer:
             )
         except Exception as exc:  # noqa: BLE001
             log.warning("readiness scoring failed: %s", exc)
+        self._progress.step(label="readiness")
 
         # v2 — T-SQL surface compatibility rollup across all dedicated pools.
         # The dedicated_pools module already classifies each code object as
@@ -120,6 +136,7 @@ class FabricMappingAnalyzer:
                 report.readiness.tsql_objects_needs_review = needs_review
         except Exception as exc:  # noqa: BLE001
             log.warning("T-SQL compatibility rollup failed: %s", exc)
+        self._progress.step(label="tsql_rollup")
 
         # v2 — sequenced migration runbook.
         try:
@@ -135,6 +152,7 @@ class FabricMappingAnalyzer:
             ]
         except Exception as exc:  # noqa: BLE001
             log.warning("runbook generation failed: %s", exc)
+        self._progress.step(label="runbook")
 
         # v2 — Fabric capacity projection (needs monitoring data).
         try:
@@ -151,5 +169,6 @@ class FabricMappingAnalyzer:
                 )
         except Exception as exc:  # noqa: BLE001
             log.warning("capacity projection failed: %s", exc)
+        self._progress.step(label="capacity_projection")
 
         return report

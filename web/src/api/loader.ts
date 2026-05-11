@@ -176,6 +176,12 @@ export type RunMeta = {
     finished_at?: string | null;
     duration_ms?: number | null;
     error?: string | null;
+    progress?: {
+      current: number;
+      total: number;
+      label?: string | null;
+      message?: string | null;
+    } | null;
   }>;
   readiness_score: number | null;
   errors_count: number;

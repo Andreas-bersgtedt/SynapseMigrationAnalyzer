@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from ...config import AppConfig
 from ...errors import format_error
+from ...progress import NullProgress, ProgressReporter
 from .arm_client import SparkArmClient
 from .artifacts_client import SparkArtifactsClient
 from . import notebook_lint, runtime_compat
@@ -19,10 +20,16 @@ log = logging.getLogger(__name__)
 
 
 class SparkPoolsAnalyzer:
-    def __init__(self, cfg: AppConfig) -> None:
+    def __init__(
+        self,
+        cfg: AppConfig,
+        *,
+        progress: ProgressReporter | None = None,
+    ) -> None:
         self._cfg = cfg
         self._arm = SparkArmClient(cfg.azure)
         self._artifacts = SparkArtifactsClient(cfg.azure)
+        self._progress = progress or NullProgress()
 
     def run(self) -> SparkAnalysis:
         result = SparkAnalysis(
@@ -31,23 +38,29 @@ class SparkPoolsAnalyzer:
             resource_group=self._cfg.azure.resource_group,
             generated_at=datetime.now(timezone.utc),
         )
+        # 6 sub-tasks: list_pools, list_notebooks, list_sjd, runtime_compat,
+        # notebook_lint, libraries.
+        self._progress.start(6, label="enumerating Spark assets")
         try:
             result.pools = list(self._arm.list_pools())
         except Exception as exc:  # noqa: BLE001
             log.warning("Failed to list Spark pools: %s", exc)
             result.errors.append(format_error("list_pools", exc))
+        self._progress.step(label="pools")
 
         try:
             result.notebooks = list(self._artifacts.list_notebooks())
         except Exception as exc:  # noqa: BLE001
             log.warning("Failed to list notebooks: %s", exc)
             result.errors.append(format_error("notebooks", exc))
+        self._progress.step(label="notebooks")
 
         try:
             result.spark_job_definitions = list(self._artifacts.list_spark_job_definitions())
         except Exception as exc:  # noqa: BLE001
             log.warning("Failed to list Spark job definitions: %s", exc)
             result.errors.append(format_error("spark_job_definitions", exc))
+        self._progress.step(label="spark_job_definitions")
 
         # v2 — runtime compatibility table per pool.
         try:
@@ -64,6 +77,7 @@ class SparkPoolsAnalyzer:
         except Exception as exc:  # noqa: BLE001
             log.warning("runtime_compat failed: %s", exc)
             result.errors.append(f"runtime_compat: {exc}")
+        self._progress.step(label="runtime_compat")
 
         # v2 — notebook lint. We use whatever source the artifacts client made available;
         # lint_notebooks tolerates missing source via the provider returning None.
@@ -92,6 +106,7 @@ class SparkPoolsAnalyzer:
         except Exception as exc:  # noqa: BLE001
             log.warning("notebook_lint failed: %s", exc)
             result.errors.append(f"notebook_lint: {exc}")
+        self._progress.step(label="notebook_lint")
 
         # v2 — workspace / pool library inventory. Stub: gracefully no-ops when the
         # artifacts SDK does not expose `list_workspace_packages` on this workspace.
@@ -101,5 +116,6 @@ class SparkPoolsAnalyzer:
                 result.libraries = list(getter())
         except Exception as exc:  # noqa: BLE001
             log.info("list_workspace_packages unavailable: %s", exc)
+        self._progress.step(label="libraries")
 
         return result

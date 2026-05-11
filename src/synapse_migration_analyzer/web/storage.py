@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from threading import RLock
 
-from .schemas import ModuleStatus, RunMeta
+from .schemas import ModuleProgress, ModuleStatus, RunMeta
 
 log = logging.getLogger(__name__)
 
@@ -176,6 +176,42 @@ class FilesystemRunRepo:
                 )
             self._write_meta(meta)
             return meta
+
+    def update_module_progress(
+        self,
+        run_id: str,
+        module: str,
+        *,
+        current: int,
+        total: int,
+        label: str | None = None,
+        message: str | None = None,
+    ) -> None:
+        """Record the latest sub-step counters for ``module`` on the run.
+
+        Used by :class:`JobRunner` so the runs-history view can show
+        in-flight progress for an active run without replaying the SSE
+        event log. Best-effort: never raises.
+        """
+        with self._lock:
+            meta = self._read_meta(run_id)
+            if meta is None:
+                return
+            for ms in meta.modules:
+                if ms.name == module:
+                    ms.progress = ModuleProgress(
+                        current=int(current),
+                        total=int(total),
+                        label=label,
+                        message=message,
+                    )
+                    break
+            else:
+                return
+            try:
+                self._write_meta(meta)
+            except OSError as exc:
+                log.warning("update_module_progress write failed: %s", exc)
 
     # ------------------------------------------------------------------
     # Internals

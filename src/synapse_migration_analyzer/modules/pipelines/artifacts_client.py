@@ -141,6 +141,15 @@ def _walk_activities(pipeline_name: str, activities: list[Any], sink: list[Activ
         compat = fabric_compat.analyze_activity(a_type, _props_as_dict(type_props))
         notes: list[str] = list(compat.caveats)  # legacy field — keep populated
 
+        # ExecuteDataFlow: capture static cluster compute size so that
+        # run_stats can derive vCore-hours from runtime statistics
+        # (cluster cores × wall-clock activity duration) rather than
+        # relying on the service-side billingReference.
+        df_cores: int | None = None
+        df_compute_type: str | None = None
+        if a_type == "ExecuteDataFlow":
+            df_cores, df_compute_type = _extract_dataflow_compute(_props_as_dict(type_props))
+
         sink.append(Activity(
             pipeline=pipeline_name,
             name=a_name,
@@ -156,6 +165,8 @@ def _walk_activities(pipeline_name: str, activities: list[Any], sink: list[Activ
             fabric_equivalent=compat.fabric_equivalent,
             migration_action=compat.migration_action,
             doc_url=compat.doc_url,
+            dataflow_cores=df_cores,
+            dataflow_compute_type=df_compute_type,
         ))
 
         # Recurse into common control containers.
@@ -206,3 +217,34 @@ def _props_as_dict(type_props: Any) -> dict[str, Any]:
         return out
     except Exception:  # noqa: BLE001
         return {}
+
+
+def _extract_dataflow_compute(props: dict[str, Any]) -> tuple[int | None, str | None]:
+    """Read the static ``compute.coreCount`` / ``compute.computeType`` from an
+    ``ExecuteDataFlow`` activity's typeProperties.
+
+    Returns ``(cores, compute_type)`` where ``cores`` is ``None`` if the
+    activity uses the default autoresolve IR or expresses ``coreCount`` as a
+    pipeline expression (we cannot resolve those statically). Supported
+    explicit values per the ADF/Synapse schema are 8, 16, 32, 48, 80, 144, 272.
+    """
+    compute = props.get("compute") if isinstance(props, dict) else None
+    if not isinstance(compute, dict):
+        return None, None
+    raw_cores = compute.get("coreCount")
+    raw_type = compute.get("computeType")
+    cores: int | None = None
+    if isinstance(raw_cores, bool):
+        # bool is a subclass of int — exclude it explicitly.
+        cores = None
+    elif isinstance(raw_cores, int):
+        cores = raw_cores
+    elif isinstance(raw_cores, float):
+        cores = int(raw_cores) if raw_cores.is_integer() else None
+    elif isinstance(raw_cores, str):
+        try:
+            cores = int(raw_cores)
+        except ValueError:
+            cores = None  # pipeline expression — fall back to default at runtime
+    compute_type = raw_type if isinstance(raw_type, str) else None
+    return cores, compute_type

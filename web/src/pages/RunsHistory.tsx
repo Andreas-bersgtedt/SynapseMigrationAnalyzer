@@ -18,6 +18,22 @@ export default function RunsHistory(): JSX.Element {
     apiListRuns(50).then(setRuns).catch((e: Error) => setError(e.message));
   }, []);
 
+  // Refresh every 2s while any run is in flight so the inline progress
+  // updates without requiring a manual reload.
+  useEffect(() => {
+    if (!runs) return;
+    const inflight = runs.some(
+      (r) => r.status === "queued" || r.status === "running",
+    );
+    if (!inflight) return;
+    const handle = window.setInterval(() => {
+      apiListRuns(50).then(setRuns).catch(() => {
+        /* ignore polling errors */
+      });
+    }, 2000);
+    return () => window.clearInterval(handle);
+  }, [runs]);
+
   if (error) return <div className="empty">Error: {error}</div>;
   if (!runs) return <div className="empty">Loading…</div>;
   if (runs.length === 0) return <div className="empty">No runs yet. Start one from the Run page.</div>;
@@ -55,6 +71,7 @@ export default function RunsHistory(): JSX.Element {
             <th>Status</th>
             <th>Started</th>
             <th>Duration</th>
+            <th>Progress</th>
             <th>Errors</th>
             <th>Score</th>
             <th></th>
@@ -70,6 +87,35 @@ export default function RunsHistory(): JSX.Element {
                   ).toFixed(1) + "s"
                 : "—";
             const inFlight = r.status === "queued" || r.status === "running";
+            // For in-flight runs, derive a high-level progress string from
+            // the persisted module progress snapshots.
+            let progressCell: JSX.Element | string = "—";
+            if (inFlight) {
+              const total = r.modules.length;
+              const finished = r.modules.filter((m) =>
+                ["ok", "failed", "skipped", "cancelled"].includes(m.state),
+              ).length;
+              const running = r.modules.find((m) => m.state === "running");
+              const sub = running?.progress;
+              if (sub && sub.total > 0) {
+                const pct = Math.min(
+                  100,
+                  Math.round((sub.current / sub.total) * 100),
+                );
+                progressCell = (
+                  <span title={sub.label ?? running?.name ?? ""}>
+                    {finished}/{total} · {running?.name} {sub.current}/{sub.total} ({pct}%)
+                  </span>
+                );
+              } else {
+                progressCell = (
+                  <span>
+                    {finished}/{total}
+                    {running ? ` · ${running.name}` : ""}
+                  </span>
+                );
+              }
+            }
             return (
               <tr key={r.id}>
                 <td><code>{r.id}</code></td>
@@ -81,6 +127,7 @@ export default function RunsHistory(): JSX.Element {
                 </td>
                 <td className="muted">{r.started_at}</td>
                 <td>{dur}</td>
+                <td>{progressCell}</td>
                 <td>{r.errors_count}</td>
                 <td>{r.readiness_score != null ? r.readiness_score.toFixed(0) : "—"}</td>
                 <td style={{ display: "flex", gap: 6 }}>

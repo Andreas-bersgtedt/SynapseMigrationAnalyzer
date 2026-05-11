@@ -38,6 +38,7 @@ def _write_run_history_csvs(result: PipelinesAnalysis, out_dir: Path) -> list[Pa
         "success_rate", "avg_duration_ms", "p95_duration_ms",
         "avg_data_moved_mb_per_run", "total_data_moved_mb",
         "avg_diu_hours_per_run", "total_diu_hours", "est_cu_hours_from_diu",
+        "avg_vcore_hours_per_run", "total_vcore_hours", "est_cu_hours_from_vcore",
         "est_non_copy_activity_runs", "est_cu_hours_from_orchestration",
     ]
     with detail_path.open("w", newline="", encoding="utf-8") as f:
@@ -78,6 +79,18 @@ def _write_run_history_csvs(result: PipelinesAnalysis, out_dir: Path) -> list[Pa
                         "" if w.est_cu_hours_from_diu is None
                         else f"{w.est_cu_hours_from_diu:.4f}"
                     ),
+                    "avg_vcore_hours_per_run": (
+                        "" if w.avg_vcore_hours_per_run is None
+                        else f"{w.avg_vcore_hours_per_run:.4f}"
+                    ),
+                    "total_vcore_hours": (
+                        "" if w.total_vcore_hours is None
+                        else f"{w.total_vcore_hours:.4f}"
+                    ),
+                    "est_cu_hours_from_vcore": (
+                        "" if w.est_cu_hours_from_vcore is None
+                        else f"{w.est_cu_hours_from_vcore:.4f}"
+                    ),
                     "est_non_copy_activity_runs": w.est_non_copy_activity_runs,
                     "est_cu_hours_from_orchestration": f"{w.est_cu_hours_from_orchestration:.4f}",
                 })
@@ -89,6 +102,7 @@ def _write_run_history_csvs(result: PipelinesAnalysis, out_dir: Path) -> list[Pa
         "headline_window_days", "run_count", "succeeded", "failed",
         "success_rate", "avg_duration_ms", "avg_data_moved_mb_per_run",
         "total_diu_hours", "est_cu_hours_from_diu",
+        "total_vcore_hours", "est_cu_hours_from_vcore",
         "est_non_copy_activity_runs", "est_cu_hours_from_orchestration",
     ]
     with summary_path.open("w", newline="", encoding="utf-8") as f:
@@ -123,6 +137,14 @@ def _write_run_history_csvs(result: PipelinesAnalysis, out_dir: Path) -> list[Pa
                 "est_cu_hours_from_diu": (
                     "" if headline.est_cu_hours_from_diu is None
                     else f"{headline.est_cu_hours_from_diu:.4f}"
+                ),
+                "total_vcore_hours": (
+                    "" if headline.total_vcore_hours is None
+                    else f"{headline.total_vcore_hours:.4f}"
+                ),
+                "est_cu_hours_from_vcore": (
+                    "" if headline.est_cu_hours_from_vcore is None
+                    else f"{headline.est_cu_hours_from_vcore:.4f}"
                 ),
                 "est_non_copy_activity_runs": headline.est_non_copy_activity_runs,
                 "est_cu_hours_from_orchestration": f"{headline.est_cu_hours_from_orchestration:.4f}",

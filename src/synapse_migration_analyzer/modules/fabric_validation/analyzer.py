@@ -15,6 +15,7 @@ from pathlib import Path
 
 from ...config import AppConfig
 from ...errors import format_error
+from ...progress import NullProgress, ProgressReporter
 from . import diff
 from .models import FabricValidationAnalysis
 from .sql_client import FabricSqlClient
@@ -23,9 +24,15 @@ log = logging.getLogger(__name__)
 
 
 class FabricValidationAnalyzer:
-    def __init__(self, cfg: AppConfig) -> None:
+    def __init__(
+        self,
+        cfg: AppConfig,
+        *,
+        progress: ProgressReporter | None = None,
+    ) -> None:
         self._cfg = cfg
         self._sql = FabricSqlClient()
+        self._progress = progress or NullProgress()
 
     def run(self) -> FabricValidationAnalysis:
         result = FabricValidationAnalysis(
@@ -41,7 +48,11 @@ class FabricValidationAnalyzer:
                 "expected_state: dedicated_pools.json not found in output_dir; "
                 "run analyze-dedicated-pools first to generate the expected state."
             )
+            self._progress.start(0, label="missing expected state")
             return result
+
+        # 5 sub-tasks: object_counts, row_counts, collation, tsql_surface, summary.
+        self._progress.start(5, label="fabric validation")
 
         # Object counts.
         try:
@@ -53,6 +64,7 @@ class FabricValidationAnalyzer:
         except Exception as exc:  # noqa: BLE001
             log.warning("object count comparison failed: %s", exc)
             result.errors.append(format_error("object_counts", exc))
+        self._progress.step(label="object_counts")
 
         # Row counts (only when explicitly enabled — slow on large warehouses).
         if os.getenv("SMA_FABRIC_VALIDATE_ROWS", "").strip() in {"1", "true", "yes"}:
@@ -72,6 +84,7 @@ class FabricValidationAnalyzer:
             except Exception as exc:  # noqa: BLE001
                 log.warning("row count comparison failed: %s", exc)
                 result.errors.append(format_error("row_counts", exc))
+        self._progress.step(label="row_counts")
 
         # Collation.
         try:
@@ -83,6 +96,7 @@ class FabricValidationAnalyzer:
         except Exception as exc:  # noqa: BLE001
             log.warning("collation comparison failed: %s", exc)
             result.errors.append(format_error("collation", exc))
+        self._progress.step(label="collation")
 
         # T-SQL surface resolutions.
         try:
@@ -100,6 +114,7 @@ class FabricValidationAnalyzer:
         except Exception as exc:  # noqa: BLE001
             log.warning("tsql surface comparison failed: %s", exc)
             result.errors.append(format_error("tsql_surface", exc))
+        self._progress.step(label="tsql_surface")
 
         result.summary = diff.summarize(
             result.object_count_checks,
@@ -107,6 +122,7 @@ class FabricValidationAnalyzer:
             result.collation_checks,
             result.tsql_surface_checks,
         )
+        self._progress.step(label="summary")
         return result
 
 

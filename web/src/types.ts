@@ -250,6 +250,12 @@ export interface PipelineRunWindowStats {
   total_diu_hours?: number | null;
   // Heuristic Fabric CU-hours equivalent (= total_diu_hours * 1.5).
   est_cu_hours_from_diu?: number | null;
+  // Mapping Data Flow Spark cluster compute (vCore-hours from Azure-IR
+  // billing entries with unit coreHour / vCoreHour). Projected to Fabric
+  // Spark CU at 1 vCore-second = 0.5 CU-second (= total * 0.5).
+  avg_vcore_hours_per_run?: number | null;
+  total_vcore_hours?: number | null;
+  est_cu_hours_from_vcore?: number | null;
   // Data Orchestration meter (Microsoft-published 0.0056 CU-hr per non-copy
   // activity run). Estimated as static non-copy activity count × pipeline runs.
   est_non_copy_activity_runs?: number;

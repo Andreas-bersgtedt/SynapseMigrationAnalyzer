@@ -6,10 +6,16 @@ Python tooling that inventories and analyzes **Azure Synapse Analytics** workspa
 > - `dedicated_pools` — dedicated SQL pool inventory, schema/table/index/usage/security/workload-management, T-SQL code-object capture, column-level collation audit, materialized-view inventory, statistics-freshness report, column stats, distribution-key advisor (skew + filter-selectivity heuristics), and a per-object "T-SQL surface gaps" rollup with stable code-object ids
 > - `serverless_pools` — built-in serverless SQL pool, databases, external data sources & external tables, top queries, daily data-scanned, cost estimate
 > - `spark_pools` — Apache Spark pool inventory & configuration, plus notebook and Spark-job-definition inventory
-> - `pipelines` — pipelines, linked services, datasets, triggers, integration runtimes, with activity-level Fabric-compatibility classification, plus rolling 7/14/28/90-day **run-history statistics** (executions, success rate, avg duration, avg MB moved per Copy/Dataflow run)
+> - `pipelines` — pipelines, linked services, datasets, triggers, integration runtimes, with activity-level Fabric-compatibility classification, plus rolling 7/14/28/90-day **run-history statistics** (executions, success rate, avg duration, avg MB moved per Copy/Dataflow run, plus runtime-derived vCore-hours per Mapping-Dataflow run from `compute.coreCount` × `executionDuration`, projected to Fabric CU-hours)
 > - `monitoring` — historical Azure Monitor metrics for dedicated SQL pools (DWU, queries, connections)
 > - `storage` — ADLS / Storage account inventory scoped to the workspace (default ADLS Gen2 + linked-service references; set `SMA_STORAGE_INCLUDE_ALL=1` to scan every account in the subscription), Azure Monitor capacity metrics (UsedCapacity, BlobCapacity), and dedicated SQL pool size in MB / GB
 > - `fabric_mapping` — aggregates the above and produces Fabric Warehouse migration recommendations (collation, T-SQL surface, activity gaps, sizing hints)
+>
+> Opt-in modules (enable with `analyze-all --include <name>` or the dedicated `sma analyze-<name>` subcommand):
+> - `governance` — workspace + resource RBAC, managed private endpoints, customer-managed keys, Microsoft Purview detection, with severity-tagged findings
+> - `security` — firewall rules, AAD-only / TLS / public network access, per-pool TDE, AAD admins, linked-service credential inventory with inline-secret detection
+> - `cost` — Microsoft Cost Management consumption (month-over-month, by resource kind), paired with the `fabric_mapping` CU projection for a side-by-side TCO delta (requires `pip install -e ".[cost]"` and Cost Management Reader)
+> - `fabric_validation` — *experimental* post-migration runner that diffs object counts, row counts, collation and T-SQL surface gap resolution against a target Fabric Warehouse
 
 📘 **New here?** See the module-based [QUICKSTART.md](QUICKSTART.md).
 
@@ -29,7 +35,12 @@ src/synapse_migration_analyzer/
 │   ├── pipelines/               # azure-synapse-artifacts SDK + Fabric-compat classifier
 │   ├── monitoring/              # azure-mgmt-monitor — dedicated-pool metrics
 │   ├── storage/                 # azure-mgmt-storage + Azure Monitor capacity + DMV pool sizing
+│   ├── governance/              # RBAC + managed private endpoints + CMK + Purview detection
+│   ├── security/                # firewall + AAD + TDE + linked-service credentials
+│   ├── cost/                    # Cost Management consumption + Fabric TCO delta (opt-in extra)
+│   ├── fabric_validation/       # post-migration runner against a Fabric Warehouse (experimental)
 │   └── fabric_mapping/          # aggregator + heuristic rules (incl. T-SQL surface scan)
+├── web/                         # FastAPI control plane (`sma serve --with-api`)
 └── reporting/                   # shared writers (JSON/CSV/Markdown), shared HTML CSS/JS,
                                   #   and the top-level index.html aggregator
 ```
@@ -103,6 +114,8 @@ sma -v analyze-dedicated-pools                    # verbose
 sma analyze-governance                            # RBAC + MPE + CMK + Purview, with findings
 sma analyze-security                              # firewall + AAD + TDE + credentials, with findings
 sma analyze-cost --months 6                       # consumption + Fabric TCO delta, with findings
+sma validate-fabric                               # experimental post-migration diff vs a Fabric Warehouse
+sma run-delta                                     # diff the last two runs (manifest + delta report)
 
 # Tooling for the web SPA / FastAPI control plane
 sma export-schema                                 # emit per-module Pydantic JSON Schema to ./schemas/
@@ -139,13 +152,27 @@ the React SPA on the same origin. Analysts can:
   write-only; reads return only `set` / `unset`.
 - Kick off analyzer runs (Run page) with a module checklist and watch live
   progress over Server-Sent Events.
-- Browse run history (Runs page) and diff any two runs (Diff page).
+- Browse run history (Runs page, with per-row Delete) and diff any two
+  runs (Diff page).
 - See workspace-level vitals on the **Dashboard**: readiness score, T-SQL
   surface findings, recommendation count, SKU advisory, top blockers,
   storage stats (dedicated-pool data / index sizes, ADLS used capacity
   per account, per-pool table breakdown) and pipeline activity over the
   last 7 days (daily run rate, success rate, daily data movement,
   top-10 pipelines by run count).
+- See an **Estate overview** across every run on disk — workspaces
+  grouped by tenant / subscription / resource group, hero totals
+  (workspaces, runs, tenants, subscriptions, ready / effort / blocked
+  split, avg T-SQL %, estimated F-SKU needed, actual Synapse vs
+  projected Fabric monthly spend), an estate readiness trend chart,
+  per-workspace sparkline of the last 50 runs, and an estate-deduped
+  *top blockers* table. CSV export available; the per-workspace
+  estimated CU includes both dedicated-pool capacity projection and
+  pipeline integration activity.
+- **Export a PDF report** from the Estate overview that bundles the
+  estate totals + each workspace's latest Dashboard (top blockers,
+  full recommendations, cost summary, runbook). Uses the browser's
+  Save-as-PDF print dialog so no extra dependencies are needed.
 
 ```powershell
 pip install -e ".[web]"                          # FastAPI + uvicorn + sse-starlette + httpx

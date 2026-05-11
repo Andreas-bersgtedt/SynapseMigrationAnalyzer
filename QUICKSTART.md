@@ -500,7 +500,7 @@ Produces:
 
 ### 4.4 Run-history statistics
 
-The analyzer pulls pipeline run history via `ArtifactsClient.pipeline_run.query_pipeline_runs_by_workspace` and aggregates it into rolling windows. For pipelines that statically contain a `Copy`, `ExecuteDataFlow` or `Lookup` activity, it also fetches activity-run outputs to compute average data-movement (MB/run from `dataRead` / `dataWritten` on Copy, `runStatus.metrics[*].bytes` on Dataflow).
+The analyzer pulls pipeline run history via `ArtifactsClient.pipeline_run.query_pipeline_runs_by_workspace` (ordered `RunStart DESC` server-side, so when the run cap is hit the oldest runs are dropped — not arbitrary ones) and aggregates it into rolling windows. For pipelines that statically contain a `Copy`, `ExecuteDataFlow` or `Lookup` activity, it also fetches activity-run outputs to compute average data-movement (MB/run from `dataRead` / `dataWritten` on Copy, `runStatus.metrics[*].bytes` on Dataflow) and — for `ExecuteDataFlow` — true **vCore-hours per run** = `compute.coreCount` (defaults to 8 when unset) × `output.executionDuration` (s), which the report then projects to Fabric CU-hours at `0.5 CU-h / vCore-h`. Any pipeline that ends up with zero runs after the global pull is back-filled via a per-pipeline `PipelineName In (...)` query so low-frequency pipelines still appear in the dashboard.
 
 Tunable via env vars (and/or `--since` / `--no-run-history`):
 
@@ -509,6 +509,7 @@ Tunable via env vars (and/or `--since` / `--no-run-history`):
 | `SMA_PIPELINES_RUN_HISTORY` | `1` | Set to `0` to skip the fetch entirely |
 | `SMA_PIPELINES_RUN_DAYS` | `90` | Widest window (also caps the API range; 7/14/28 are clamped to it) |
 | `SMA_PIPELINES_RUN_LIMIT` | `5000` | Safety cap on total runs / activity rows fetched per call; sets `truncated=true` when reached |
+| `SMA_PIPELINES_RUN_BACKFILL_PER_PIPELINE` | `10` | When the global cap is hit, fetch up to N most-recent runs per pipeline that ended up with zero global runs |
 | `SMA_PIPELINES_ACTIVITY_RUNS` | `1` | Set to `0` to skip activity-run fetch (data-movement metrics will be `null`) |
 
 > **Compatibility detail.** When an activity is marked `partial`, the analyzer

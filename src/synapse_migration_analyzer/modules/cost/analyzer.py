@@ -9,6 +9,7 @@ from pathlib import Path
 
 from ...config import AppConfig
 from ...errors import format_error
+from ...progress import NullProgress, ProgressReporter
 from . import cost_client as _client
 from . import fabric_compare
 from . import rules as _rules
@@ -19,9 +20,15 @@ log = logging.getLogger(__name__)
 
 
 class CostAnalyzer:
-    def __init__(self, cfg: AppConfig) -> None:
+    def __init__(
+        self,
+        cfg: AppConfig,
+        *,
+        progress: ProgressReporter | None = None,
+    ) -> None:
         self._cfg = cfg
         self._cc = CostClient(cfg.azure)
+        self._progress = progress or NullProgress()
 
     def run(self) -> CostAnalysis:
         months = int(os.getenv("SMA_COST_MONTHS", "3"))
@@ -36,6 +43,9 @@ class CostAnalyzer:
             window_end=end,
         )
 
+        # 4 sub-tasks: fetch rows, aggregate, fabric compare, rules.
+        self._progress.start(4, label="cost discovery")
+
         try:
             result.rows, result.collection_status = (
                 self._cc.fetch_monthly_breakdown_with_status(start, end)
@@ -44,6 +54,7 @@ class CostAnalyzer:
             log.warning("fetch_monthly_breakdown failed: %s", exc)
             result.errors.append(format_error("monthly_breakdown", exc))
             result.collection_status = "error"
+        self._progress.step(label="monthly_breakdown")
 
         try:
             result.monthly_totals, result.by_resource_kind = _client.aggregate_rows(result.rows)
@@ -51,6 +62,7 @@ class CostAnalyzer:
         except Exception as exc:  # noqa: BLE001
             log.warning("aggregate_rows failed: %s", exc)
             result.errors.append(format_error("aggregate", exc))
+        self._progress.step(label="aggregate")
 
         # Optional: compare against the Fabric CU projection from the
         # fabric_mapping module (loaded from fabric_mapping.json if present).
@@ -61,12 +73,14 @@ class CostAnalyzer:
         except Exception as exc:  # noqa: BLE001
             log.warning("fabric comparison failed: %s", exc)
             result.errors.append(format_error("fabric_compare", exc))
+        self._progress.step(label="fabric_compare")
 
         try:
             result.findings = _rules.evaluate(result)
         except Exception as exc:  # noqa: BLE001
             log.warning("rules.evaluate failed: %s", exc)
             result.errors.append(format_error("rules", exc))
+        self._progress.step(label="rules")
 
         return result
 

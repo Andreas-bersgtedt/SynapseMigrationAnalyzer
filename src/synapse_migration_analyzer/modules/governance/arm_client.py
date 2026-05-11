@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Iterable
 
 from ...config import AzureConfig
@@ -23,6 +25,13 @@ log = logging.getLogger(__name__)
 
 def _live_disabled() -> bool:
     return os.getenv("SMA_GOVERNANCE_DISABLE_LIVE", "").strip() in {"1", "true", "yes"}
+
+
+def _scope_concurrency() -> int:
+    try:
+        return max(1, int(os.getenv("SMA_GOVERNANCE_SCOPE_CONCURRENCY", "4")))
+    except ValueError:
+        return 4
 
 
 class GovernanceArmClient:
@@ -69,26 +78,62 @@ class GovernanceArmClient:
         scope_list = list(scopes or [
             f"/subscriptions/{self._cfg.subscription_id}/resourceGroups/{self._cfg.resource_group}"
         ])
-        for scope in scope_list:
+
+        # Pull each scope's role assignments in parallel; the friendly-name
+        # cache is shared and guarded by a lock.
+        cache_lock = threading.Lock()
+
+        def _one(scope: str) -> list[tuple[str, RoleAssignment]]:
             try:
                 pages = client.role_assignments.list_for_scope(scope)
             except Exception as exc:  # noqa: BLE001
                 log.warning("role_assignments.list_for_scope(%s) failed: %s", scope, exc)
-                continue
+                return []
+            scope_results: list[tuple[str, RoleAssignment]] = []
             for ra in pages:
                 ra_id = getattr(ra, "id", "") or ""
+                model = _role_assignment_to_model(ra, scope)
+                if model.role_definition_id:
+                    model.role_name = self._resolve_role_name_locked(
+                        client, model.role_definition_id,
+                        fallback=model.role_name, lock=cache_lock,
+                    )
+                scope_results.append((ra_id, model))
+            return scope_results
+
+        max_workers = min(len(scope_list), _scope_concurrency())
+        if max_workers <= 1:
+            per_scope = [_one(s) for s in scope_list]
+        else:
+            with ThreadPoolExecutor(max_workers=max_workers,
+                                    thread_name_prefix="sma-gov-rbac") as ex:
+                per_scope = list(ex.map(_one, scope_list))
+
+        for scope_results in per_scope:
+            for ra_id, model in scope_results:
                 if ra_id and ra_id in seen_ids:
                     continue
                 if ra_id:
                     seen_ids.add(ra_id)
-                model = _role_assignment_to_model(ra, scope)
-                # Resolve friendly role name (cached).
-                if model.role_definition_id:
-                    model.role_name = self._resolve_role_name(
-                        client, model.role_definition_id, fallback=model.role_name
-                    )
                 results.append(model)
         return results
+
+    def _resolve_role_name_locked(
+        self,
+        client: object,
+        role_definition_id: str,
+        *,
+        fallback: str,
+        lock: threading.Lock,
+    ) -> str:
+        with lock:
+            cached = self._role_name_cache.get(role_definition_id)
+        if cached is not None:
+            return cached
+        name = self._resolve_role_name(client, role_definition_id, fallback=fallback)
+        with lock:
+            self._role_name_cache.setdefault(role_definition_id, name)
+        return name
 
     def _resolve_role_name(
         self,

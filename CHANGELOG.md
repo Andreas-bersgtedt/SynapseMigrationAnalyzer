@@ -6,6 +6,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.2] - 2026-05-11
+
+### Added
+- **Mapping-dataflow vCore-hours derived from Spark runtime, not billing.**
+  The pipelines module now reads each `ExecuteDataFlow` activity's
+  `compute.coreCount` / `compute.computeType` from the pipeline
+  definition (defaults to **8 cores** when unset) and multiplies it by
+  the activity's wall-clock runtime (`output.executionDuration` in
+  seconds, falling back to `duration_in_ms / 1000`) to produce true
+  vCore-hours per run. Those are then projected to Fabric CU-hours
+  using the documented `0.5 CU-h / vCore-h` ratio. Example: 1 driver ×
+  4 vCores × 36 s = 144 vCore-seconds = 0.04 vCore-hours = **0.02 CU-h**
+  for that single dataflow execution, matching what the
+  user-facing dashboard now reports. New `Activity.dataflow_cores` /
+  `Activity.dataflow_compute_type` fields surface the captured cluster
+  shape per activity.
+
+### Fixed
+- **Low-frequency pipelines no longer disappear from the dashboard
+  when the global run-history cap is hit.** Previously a single very
+  busy pipeline could consume the entire `SMA_PIPELINES_RUN_LIMIT`
+  budget (default 5,000 runs / 90 days) and starve every other
+  pipeline out of the result set — the dashboard then showed
+  `0 runs` and `last_run_at = —` for pipelines that had actually
+  executed in the window. The Synapse run-history query is now
+  ordered `RunStart DESC` server-side (so truncation drops the
+  *oldest* runs, not arbitrary ones), and any pipeline that ends up
+  with zero runs after the global pull is back-filled with a
+  per-pipeline `PipelineName In (...)` query batched 25 pipelines /
+  request, up to 10 runs / pipeline. New env var
+  `SMA_PIPELINES_RUN_BACKFILL_PER_PIPELINE` (default `10`) tunes the
+  per-pipeline cap.
+
+## [2.4.1] - 2026-05-09
+
+### Fixed
+- **Estate overview: total projected Fabric CU now includes pipeline
+  integration activity.** The hero "Estimated SKU needed" card and the
+  per-workspace `projected_fabric_cu` column previously only reflected
+  the dedicated-pool capacity projection (`fabric_mapping.capacity_projection.estimated_cu`),
+  so workspaces whose Fabric footprint is dominated by Data Factory
+  pipelines were sized too small and disagreed with the per-workspace
+  Dashboard which already added the pipeline contribution as
+  `+ X CU/day from pipelines`. The estate aggregator now reads
+  `pipelines.json` for each workspace's latest run, computes steady-state
+  CU/day from `est_cu_hours_from_diu + est_cu_hours_from_orchestration`
+  using the same 7-day-window math as the Dashboard, and folds it into
+  the per-workspace and estate totals. The Export PDF report picks up
+  the corrected value automatically.
+
 ## [2.4.0] - 2026-05-08
 
 ### Added

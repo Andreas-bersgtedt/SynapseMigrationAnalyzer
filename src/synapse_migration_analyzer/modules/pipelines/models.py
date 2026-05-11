@@ -24,6 +24,15 @@ class Activity(BaseModel):
     fabric_equivalent: str | None = None
     migration_action: str | None = None
     doc_url: str | None = None
+    # Mapping Data Flow only: the static ``compute.coreCount`` declared on the
+    # ExecuteDataFlow activity (total Spark cluster vCores: driver + workers).
+    # ``None`` when the activity uses the default autoresolve IR or expresses
+    # ``coreCount`` as a runtime expression. ``run_stats`` falls back to a
+    # configurable default in that case.
+    dataflow_cores: int | None = None
+    # Mapping Data Flow only: ``compute.computeType`` (``General`` /
+    # ``MemoryOptimized`` / ``ComputeOptimized``). Informational only.
+    dataflow_compute_type: str | None = None
 
 
 class Pipeline(BaseModel):
@@ -114,6 +123,16 @@ class PipelineRunWindowStats(BaseModel):
     # (= total_diu_hours * DIU_TO_CU_HOURS, default 1.5). None when no DIU
     # billing was observed for the pipeline in this window.
     est_cu_hours_from_diu: float | None = None
+    # Mapping Data Flow Spark compute, in vCore-hours, as reported by
+    # ``billableDuration[]`` entries with units coreHour / vCoreHour on
+    # ExecuteDataFlow activity runs. ``None`` when no vCore-time billing
+    # was observed in this window.
+    avg_vcore_hours_per_run: float | None = None
+    total_vcore_hours: float | None = None
+    # Fabric Spark CU-hours equivalent, assuming a migration target of a
+    # Fabric Spark job, at the rate **1 vCore-second = 0.5 CU-second**
+    # (= total_vcore_hours * 0.5). None when no vCore billing observed.
+    est_cu_hours_from_vcore: float | None = None
     # Data Orchestration: Microsoft charges 0.0056 CU-hours per non-copy
     # activity run (Fabric capacity meters). We estimate the count of
     # non-copy activity runs as (static non-copy activity count in pipeline

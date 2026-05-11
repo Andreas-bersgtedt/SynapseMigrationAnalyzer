@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import logging
+import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from typing import Callable
 
 from .models import (
     ExternalDataSource,
@@ -23,6 +26,46 @@ DEFAULT_PRICE_PER_TB_USD = 5.0
 log = logging.getLogger(__name__)
 
 
+def _db_concurrency() -> int:
+    """How many user databases to query in parallel inside a serverless collector."""
+    try:
+        return max(1, int(os.getenv("SMA_SERVERLESS_DB_CONCURRENCY", "4")))
+    except ValueError:
+        return 4
+
+
+def _per_db_parallel(
+    sql: ServerlessSqlClient,
+    databases: list[ServerlessDatabase],
+    query_name: str,
+    label: str,
+) -> list[tuple[str, list[dict]]]:
+    """Run ``query_name`` across each non-master DB; return [(db_name, rows), ...].
+
+    Each worker opens its own pyodbc session against ``master\u2192db`` so we get
+    one login per database in parallel rather than serial logins.
+    """
+    targets = [db.name for db in databases if db.name != "master"]
+    if not targets:
+        return []
+    max_workers = min(len(targets), _db_concurrency())
+
+    def _one(db_name: str) -> tuple[str, list[dict]]:
+        try:
+            client = sql.for_database(db_name)
+            with client.session():
+                return db_name, client.fetch_query_file(query_name)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("%s failed for %s: %s", label, db_name, exc)
+            return db_name, []
+
+    if max_workers <= 1:
+        return [_one(db) for db in targets]
+    with ThreadPoolExecutor(max_workers=max_workers,
+                            thread_name_prefix="sma-srv-db") as ex:
+        return list(ex.map(_one, targets))
+
+
 def collect_databases(sql: ServerlessSqlClient) -> list[ServerlessDatabase]:
     rows = sql.fetch_query_file("databases")
     return [
@@ -37,33 +80,19 @@ def collect_databases(sql: ServerlessSqlClient) -> list[ServerlessDatabase]:
 
 def collect_external_data_sources(sql: ServerlessSqlClient, databases: list[ServerlessDatabase]) -> list[ExternalDataSource]:
     out: list[ExternalDataSource] = []
-    for db in databases:
-        if db.name in ("master",):
-            continue
-        try:
-            rows = sql.for_database(db.name).fetch_query_file("external_data_sources")
-        except Exception as exc:  # noqa: BLE001
-            log.warning("external_data_sources failed for %s: %s", db.name, exc)
-            continue
+    for db_name, rows in _per_db_parallel(sql, databases, "external_data_sources", "external_data_sources"):
         for r in rows:
-            out.append(ExternalDataSource(database=db.name, name=r["name"],
+            out.append(ExternalDataSource(database=db_name, name=r["name"],
                                           location=r.get("location"), type=r.get("type_desc")))
     return out
 
 
 def collect_external_tables(sql: ServerlessSqlClient, databases: list[ServerlessDatabase]) -> list[ExternalTable]:
     out: list[ExternalTable] = []
-    for db in databases:
-        if db.name in ("master",):
-            continue
-        try:
-            rows = sql.for_database(db.name).fetch_query_file("external_tables")
-        except Exception as exc:  # noqa: BLE001
-            log.warning("external_tables failed for %s: %s", db.name, exc)
-            continue
+    for db_name, rows in _per_db_parallel(sql, databases, "external_tables", "external_tables"):
         for r in rows:
             out.append(ExternalTable(
-                database=db.name,
+                database=db_name,
                 schema_name=r["schema_name"],
                 table_name=r["table_name"],
                 data_source=r.get("data_source"),
@@ -140,17 +169,10 @@ def collect_external_table_columns(
     expose `sys.external_tables` columns the same way and that's fine.
     """
     out: list[ExternalTableColumn] = []
-    for db in databases:
-        if db.name == "master":
-            continue
-        try:
-            rows = sql.for_database(db.name).fetch_query_file("external_table_columns")
-        except Exception as exc:  # noqa: BLE001
-            log.warning("external_table_columns failed for %s: %s", db.name, exc)
-            continue
+    for db_name, rows in _per_db_parallel(sql, databases, "external_table_columns", "external_table_columns"):
         for r in rows:
             out.append(ExternalTableColumn(
-                database=r.get("database_name") or db.name,
+                database=r.get("database_name") or db_name,
                 schema_name=r["schema_name"],
                 table_name=r["table_name"],
                 column_name=r["column_name"],

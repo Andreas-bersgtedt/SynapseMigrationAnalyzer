@@ -338,6 +338,10 @@ def validate_fabric(ctx: click.Context, formats: tuple[str, ...]) -> None:
 @click.option("--webui-dist", "webui_dist", type=click.Path(file_okay=False, path_type=Path),
               default=None,
               help="Override the location of the prebuilt SPA (default: <repo>/web/dist).")
+@click.option("--max-parallel", "max_parallel", type=click.IntRange(1, 16), default=None,
+              help="Run independent modules concurrently (default: 4, override with "
+                   "SMA_ANALYZE_PARALLELISM). Set to 1 for fully sequential execution "
+                   "and stable log ordering.")
 @click.pass_context
 def analyze_all(
     ctx: click.Context,
@@ -345,6 +349,7 @@ def analyze_all(
     include: tuple[str, ...],
     with_webui: bool,
     webui_dist: Path | None,
+    max_parallel: int | None,
 ) -> None:
     """Run every analyzer (dedicated, serverless, spark, pipelines, monitoring, storage) then map-to-fabric."""
     cfg = ctx.obj["config"]
@@ -357,42 +362,98 @@ def analyze_all(
     all_paths: list = []
     partial_failure = False
 
-    def _step(label: str, key: str, work):
-        nonlocal partial_failure
-        if key in skipped:
-            log.info("%s skipped", label)
-            return
-        log.info(label)
+    if max_parallel is None:
         try:
-            all_paths.extend(work())
-        except Exception as exc:  # noqa: BLE001
-            log.warning("%s failed (continuing): %s", label, exc)
-            partial_failure = True
+            max_parallel = max(1, int(os.getenv("SMA_ANALYZE_PARALLELISM", "4")))
+        except ValueError:
+            max_parallel = 4
 
-    _step("[1/7] dedicated pools", "dedicated_pools", lambda: write_dedicated_reports(
-        DedicatedPoolsAnalyzer(cfg).run(), cfg.output_dir, formats=list(_ALL_FORMATS)))
-    _step("[2/7] serverless pools", "serverless_pools", lambda: write_serverless_reports(
-        ServerlessPoolsAnalyzer(cfg).run(), cfg.output_dir, formats=list(_ALL_FORMATS)))
-    _step("[3/7] spark pools", "spark_pools", lambda: write_spark_reports(
-        SparkPoolsAnalyzer(cfg).run(), cfg.output_dir, formats=list(_ALL_FORMATS)))
-    _step("[4/7] pipelines", "pipelines", lambda: write_pipelines_reports(
-        PipelinesAnalyzer(cfg).run(), cfg.output_dir, formats=list(_ALL_FORMATS)))
-    _step("[5/7] monitoring", "monitoring", lambda: write_monitoring_reports(
-        MonitoringAnalyzer(cfg).run(), cfg.output_dir, formats=list(_ALL_FORMATS)))
-    _step("[6/7] storage", "storage", lambda: write_storage_reports(
-        StorageAnalyzer(cfg).run(), cfg.output_dir, formats=list(_ALL_FORMATS)))
-    _step("[7/7] fabric mapping", "fabric_mapping", lambda: write_fabric_reports(
-        FabricMappingAnalyzer(cfg).run(), cfg.output_dir, formats=list(_ALL_FORMATS)))
+    # Wave A: every module that only depends on Azure (no on-disk inputs from
+    # other modules). Wave B: modules that consume the JSON outputs of wave A.
+    wave_a: list[tuple[str, str, "callable"]] = [
+        ("[1/7] dedicated pools", "dedicated_pools",
+         lambda: write_dedicated_reports(DedicatedPoolsAnalyzer(cfg).run(),
+                                         cfg.output_dir, formats=list(_ALL_FORMATS))),
+        ("[2/7] serverless pools", "serverless_pools",
+         lambda: write_serverless_reports(ServerlessPoolsAnalyzer(cfg).run(),
+                                          cfg.output_dir, formats=list(_ALL_FORMATS))),
+        ("[3/7] spark pools", "spark_pools",
+         lambda: write_spark_reports(SparkPoolsAnalyzer(cfg).run(),
+                                     cfg.output_dir, formats=list(_ALL_FORMATS))),
+        ("[4/7] pipelines", "pipelines",
+         lambda: write_pipelines_reports(PipelinesAnalyzer(cfg).run(),
+                                         cfg.output_dir, formats=list(_ALL_FORMATS))),
+        ("[5/7] monitoring", "monitoring",
+         lambda: write_monitoring_reports(MonitoringAnalyzer(cfg).run(),
+                                          cfg.output_dir, formats=list(_ALL_FORMATS))),
+        ("[6/7] storage", "storage",
+         lambda: write_storage_reports(StorageAnalyzer(cfg).run(),
+                                       cfg.output_dir, formats=list(_ALL_FORMATS))),
+        ("[+] governance", "governance",
+         lambda: write_governance_reports(GovernanceAnalyzer(cfg).run(),
+                                          cfg.output_dir, formats=list(_ALL_FORMATS))),
+        ("[+] security", "security",
+         lambda: write_security_reports(SecurityAnalyzer(cfg).run(),
+                                        cfg.output_dir, formats=list(_ALL_FORMATS))),
+    ]
+    wave_b: list[tuple[str, str, "callable"]] = [
+        # cost optionally compares against fabric_mapping.json -- if mapping is
+        # also enabled it should run AFTER mapping. fabric_mapping reads every
+        # other module's JSON, so it MUST be in wave B too.
+        ("[7/7] fabric mapping", "fabric_mapping",
+         lambda: write_fabric_reports(FabricMappingAnalyzer(cfg).run(),
+                                      cfg.output_dir, formats=list(_ALL_FORMATS))),
+        ("[+] cost", "cost",
+         lambda: write_cost_reports(CostAnalyzer(cfg).run(),
+                                    cfg.output_dir, formats=list(_ALL_FORMATS))),
+        ("[+] fabric_validation", "fabric_validation",
+         lambda: write_fabric_validation_reports(FabricValidationAnalyzer(cfg).run(),
+                                                 cfg.output_dir,
+                                                 formats=["json", "csv", "markdown"])),
+    ]
 
-    # Mid-term scaffolding modules — opt-in via --include or env.
-    _step("[+] governance", "governance", lambda: write_governance_reports(
-        GovernanceAnalyzer(cfg).run(), cfg.output_dir, formats=list(_ALL_FORMATS)))
-    _step("[+] security", "security", lambda: write_security_reports(
-        SecurityAnalyzer(cfg).run(), cfg.output_dir, formats=list(_ALL_FORMATS)))
-    _step("[+] cost", "cost", lambda: write_cost_reports(
-        CostAnalyzer(cfg).run(), cfg.output_dir, formats=list(_ALL_FORMATS)))
-    _step("[+] fabric_validation", "fabric_validation", lambda: write_fabric_validation_reports(
-        FabricValidationAnalyzer(cfg).run(), cfg.output_dir, formats=["json", "csv", "markdown"]))
+    def _run_wave(steps: list[tuple[str, str, "callable"]]) -> None:
+        nonlocal partial_failure
+        active = [(label, key, work) for (label, key, work) in steps if key not in skipped]
+        for (label, key, _work) in steps:
+            if key in skipped:
+                log.info("%s skipped", label)
+        if not active:
+            return
+        workers = max(1, min(max_parallel or 1, len(active)))
+        if workers == 1:
+            for label, _key, work in active:
+                log.info(label)
+                try:
+                    all_paths.extend(work())
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("%s failed (continuing): %s", label, exc)
+                    partial_failure = True
+            return
+
+        log.info("Running %d module(s) with concurrency=%d", len(active), workers)
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _wrap(label: str, work):
+            log.info("%s started", label)
+            return label, work()
+
+        with ThreadPoolExecutor(max_workers=workers,
+                                thread_name_prefix="sma-mod") as ex:
+            futures = {ex.submit(_wrap, label, work): label
+                       for (label, _key, work) in active}
+            for fut in as_completed(futures):
+                label = futures[fut]
+                try:
+                    _label, paths = fut.result()
+                    all_paths.extend(paths)
+                    log.info("%s done", label)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("%s failed (continuing): %s", label, exc)
+                    partial_failure = True
+
+    _run_wave(wave_a)
+    _run_wave(wave_b)
 
     # Optionally drop the prebuilt static SPA into output_dir BEFORE we (re)build
     # the index, so the index can render an "Open web UI" banner when the SPA

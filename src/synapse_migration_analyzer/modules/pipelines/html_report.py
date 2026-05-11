@@ -245,6 +245,7 @@ _TEMPLATE = """<!doctype html>
  <span class="pill warn">95&ndash;99%</span> <span class="pill err">&lt;95%</span>.
  Data movement is reported for pipelines that statically contain a Copy / Dataflow / Lookup activity.
  Est. CU-hrs (DM) projects Azure-IR DIU-hours to Fabric CU-hours at <strong>1.5 CU-hr / DIU-hr</strong> (heuristic).
+ Est. CU-hrs (DF) projects Mapping Data Flow Spark vCore-hours (derived from the executing Spark cluster shape × wall-clock runtime, not service billing) to Fabric Spark CU-hours at <strong>1 vCore-sec = 0.5 CU-sec</strong> (assumes migration to a Fabric Spark job).
  Est. CU-hrs (Orch) charges <strong>0.0056 CU-hr per non-copy activity run</strong> (Microsoft-published Fabric meter), estimated as static non-copy activity count × pipeline runs.
 </p>
 <input class="filter" type="text" placeholder="Filter pipelines" oninput="smaFilter(this,'tbl-runs')"/>
@@ -256,6 +257,7 @@ _TEMPLATE = """<!doctype html>
   <th class="num">Avg duration (ms)</th><th class="num">p95 (ms)</th>
   <th class="num">Avg MB / run</th><th class="num">Total MB</th>
   <th class="num">DIU-hrs</th><th class="num">Est. CU-hrs (DM)</th>
+  <th class="num">vCore-hrs</th><th class="num">Est. CU-hrs (DF)</th>
   <th class="num">Non-copy runs</th><th class="num">Est. CU-hrs (Orch)</th>
  </tr>
  {% for s in r.run_history.by_pipeline %}
@@ -291,6 +293,8 @@ _TEMPLATE = """<!doctype html>
    <td class="num">{% if w.total_data_moved_mb is none %}—{% else %}{{ '%.2f'|format(w.total_data_moved_mb) }}{% endif %}</td>
    <td class="num">{% if w.total_diu_hours is none %}—{% else %}{{ '%.3f'|format(w.total_diu_hours) }}{% endif %}</td>
    <td class="num">{% if w.est_cu_hours_from_diu is none %}—{% else %}{{ '%.3f'|format(w.est_cu_hours_from_diu) }}{% endif %}</td>
+   <td class="num">{% if w.total_vcore_hours is none %}—{% else %}{{ '%.3f'|format(w.total_vcore_hours) }}{% endif %}</td>
+   <td class="num">{% if w.est_cu_hours_from_vcore is none %}—{% else %}{{ '%.3f'|format(w.est_cu_hours_from_vcore) }}{% endif %}</td>
    <td class="num">{{ w.est_non_copy_activity_runs }}</td>
    <td class="num">{{ '%.3f'|format(w.est_cu_hours_from_orchestration) }}</td>
   </tr>

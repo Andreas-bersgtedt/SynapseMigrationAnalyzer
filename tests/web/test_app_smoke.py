@@ -132,7 +132,7 @@ class _FakeAnalyzer:
 
 def _fake_dispatch():  # noqa: ANN202
     def factory(name: str):  # noqa: ANN202
-        def make(_cfg):  # noqa: ANN202
+        def make(_cfg, _progress=None):  # noqa: ANN202
             def writer(result, out_dir, formats):  # noqa: ANN001
                 Path(out_dir).mkdir(parents=True, exist_ok=True)
                 p = Path(out_dir) / f"{name}.json"

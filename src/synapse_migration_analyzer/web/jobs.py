@@ -21,13 +21,14 @@ from typing import Any
 
 from ..config import AppConfig, load_config
 from ..modules import MODULE_REGISTRY
+from ..progress import CallbackProgress, ProgressReporter
 from .schemas import KNOWN_MODULES, ModuleStatus, RunMeta
 from .storage import FilesystemRunRepo
 
 log = logging.getLogger(__name__)
 
 
-def _module_dispatch() -> dict[str, Callable[[AppConfig], tuple[Any, Callable[..., list[Path]]]]]:
+def _module_dispatch() -> dict[str, Callable[[AppConfig, ProgressReporter], tuple[Any, Callable[..., list[Path]]]]]:
     """Return the analyzer dispatch table.
 
     Thin wrapper around :data:`..modules.MODULE_REGISTRY` so callers (and
@@ -61,7 +62,7 @@ class JobRunner:
         repo: FilesystemRunRepo,
         *,
         env_file: Path | None = None,
-        dispatch: dict[str, Callable[[AppConfig], tuple[Any, Callable[..., list[Path]]]]] | None = None,
+        dispatch: dict[str, Callable[[AppConfig, ProgressReporter], tuple[Any, Callable[..., list[Path]]]]] | None = None,
         load_cfg: Callable[[Path | None], AppConfig] | None = None,
     ) -> None:
         self.repo = repo
@@ -234,13 +235,74 @@ class JobRunner:
                 self.repo.update_module(run_id, ms.name, state="running")
                 self._publish(run_id, {"type": "module_started", "module": ms.name})
                 t0 = time.monotonic()
+
+                # Build a throttled progress reporter that fans events out to
+                # SSE subscribers as ``module_progress`` events. Worker thread
+                # invocations are marshalled back to the event loop via
+                # ``call_soon_threadsafe`` so ``_publish`` (and the queue
+                # mutations it does) only run on the asyncio thread.
+                loop = asyncio.get_running_loop()
+                module_name = ms.name
+
+                # Throttle: at most one ``step`` event every 250 ms, plus
+                # always emit on start / total grow / completion / message.
+                last_emit_ts = [0.0]
+                throttle_lock = threading.Lock()
+
+                def _emit(snap: dict[str, Any]) -> None:
+                    cur = int(snap.get("current", 0))
+                    tot = int(snap.get("total", 0))
+                    msg = snap.get("message")
+                    label = snap.get("label") or ""
+                    now = time.monotonic()
+                    with throttle_lock:
+                        # Always emit when total changes, on completion,
+                        # when a fresh message arrives, or when the throttle
+                        # window has elapsed.
+                        elapsed = now - last_emit_ts[0]
+                        terminal = tot > 0 and cur >= tot
+                        if (
+                            elapsed >= 0.25
+                            or terminal
+                            or msg is not None
+                            or last_emit_ts[0] == 0.0
+                        ):
+                            last_emit_ts[0] = now
+                        else:
+                            return
+                    payload = {
+                        "type": "module_progress",
+                        "module": module_name,
+                        "current": cur,
+                        "total": tot,
+                        "label": label,
+                        "message": msg,
+                    }
+                    try:
+                        loop.call_soon_threadsafe(self._publish, run_id, payload)
+                    except RuntimeError:
+                        # Event loop closed mid-run (e.g. shutdown) — drop.
+                        pass
+                    # Persist the latest snapshot on RunMeta so
+                    # ``GET /api/runs`` reflects progress for in-flight runs.
+                    try:
+                        self.repo.update_module_progress(
+                            run_id, module_name,
+                            current=cur, total=tot,
+                            label=label or None, message=msg,
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+
+                progress = CallbackProgress(_emit)
+
                 try:
                     factory = self._dispatch[ms.name]
                     # Run analyzer + write_reports in a thread pool so we
                     # don't block the event loop. write_reports persists
                     # JSON / CSV / Markdown / HTML next to run_dir.
                     await asyncio.to_thread(
-                        _run_module_sync, factory, cfg, run_dir,
+                        _run_module_sync, factory, cfg, run_dir, progress,
                     )
                     duration_ms = int((time.monotonic() - t0) * 1000)
                     self.repo.update_module(
@@ -305,15 +367,16 @@ class JobRunner:
 
 
 def _run_module_sync(
-    factory: Callable[[AppConfig], tuple[Any, Callable[..., list[Path]]]],
+    factory: Callable[[AppConfig, ProgressReporter], tuple[Any, Callable[..., list[Path]]]],
     cfg: AppConfig,
     run_dir: Path,
+    progress: ProgressReporter,
 ) -> AsyncIterator[None]:
     """Helper: invoke the module's analyzer + writer with the run dir.
 
     Run synchronously; called via ``asyncio.to_thread``.
     """
-    result, writer = factory(cfg)
+    result, writer = factory(cfg, progress)
     # Every analyzer's writer accepts (result, output_dir, formats=...).
     writer(result, run_dir, formats=["json", "csv", "markdown", "html"])
     return None  # type: ignore[return-value]

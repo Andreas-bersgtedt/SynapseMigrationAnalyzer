@@ -219,6 +219,7 @@ def _extract_run(run_dir: Path) -> dict[str, Any] | None:
 
     fm = _read_optional_json(run_dir / "fabric_mapping.json")
     cost = _read_optional_json(run_dir / "cost.json")
+    pipelines = _read_optional_json(run_dir / "pipelines.json")
     workspace_name = (
         meta.get("workspace_name")
         or (fm.get("workspace_name") if fm else None)
@@ -283,6 +284,18 @@ def _extract_run(run_dir: Path) -> dict[str, Any] | None:
         workspace_name=workspace_name,
     )
 
+    # Steady-state CU contribution from pipeline integration activity
+    # (DIU-hr + orchestration CU-hr). Mirrors Dashboard's calculation so the
+    # estate-level "Estimated SKU needed" accounts for pipelines, not just
+    # the dedicated-pool capacity projection.
+    integration_daily_cu = _integration_daily_cu(pipelines)
+
+    dw_cu = capacity.get("estimated_cu")
+    if dw_cu is None and integration_daily_cu == 0.0:
+        projected_fabric_cu: float | None = None
+    else:
+        projected_fabric_cu = float(dw_cu or 0.0) + integration_daily_cu
+
     return {
         "id": meta.get("id") or run_dir.name,
         "status": meta.get("status") or "ok",
@@ -301,7 +314,9 @@ def _extract_run(run_dir: Path) -> dict[str, Any] | None:
         "warning_count": warnings_count,
         "info_count": info_count,
         "tsql_compatibility_pct": readiness.get("tsql_compatibility_pct"),
-        "projected_fabric_cu": capacity.get("estimated_cu"),
+        "projected_fabric_cu": projected_fabric_cu,
+        "projected_fabric_cu_dw": capacity.get("estimated_cu"),
+        "projected_fabric_cu_pipelines": integration_daily_cu or None,
         "recommended_fabric_sku": capacity.get("recommended_sku"),
         "actual_monthly_cost": actual_monthly,
         "actual_currency": actual_currency,
@@ -321,6 +336,49 @@ def _read_optional_json(path: Path) -> dict[str, Any] | None:
         log.warning("estate: skipping unreadable %s: %s", path, exc)
         return None
     return data if isinstance(data, dict) else None
+
+
+def _integration_daily_cu(pipelines: dict[str, Any] | None) -> float:
+    """Steady-state CU/day from pipeline integration activity.
+
+    Mirrors ``Dashboard.tsx``: prefers the 7-day window per pipeline (falls
+    back to the first available window), sums DIU + orchestration CU-hours
+    across pipelines, then converts CU-hr/window into sustained CU
+    (``total / window_days / 24``). Returns ``0.0`` when ``pipelines.json``
+    is absent or has no run-history rollup.
+    """
+    if not pipelines:
+        return 0.0
+    hist = pipelines.get("run_history") or {}
+    by_pipeline = hist.get("by_pipeline") or []
+    if not isinstance(by_pipeline, list) or not by_pipeline:
+        return 0.0
+    total_cu_hr = 0.0
+    window_days = 0
+    for p in by_pipeline:
+        if not isinstance(p, dict):
+            continue
+        windows = p.get("windows") or []
+        if not isinstance(windows, list) or not windows:
+            continue
+        w = next(
+            (x for x in windows if isinstance(x, dict) and x.get("window_days") == 7),
+            windows[0] if isinstance(windows[0], dict) else None,
+        )
+        if not w:
+            continue
+        try:
+            total_cu_hr += float(w.get("est_cu_hours_from_diu") or 0.0)
+            total_cu_hr += float(w.get("est_cu_hours_from_vcore") or 0.0)
+            total_cu_hr += float(w.get("est_cu_hours_from_orchestration") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        wd = w.get("window_days")
+        if isinstance(wd, (int, float)) and wd > window_days:
+            window_days = int(wd)
+    if window_days <= 0:
+        return 0.0
+    return (total_cu_hr / window_days) / 24.0
 
 
 def _parse_dt(value: Any) -> datetime | None:

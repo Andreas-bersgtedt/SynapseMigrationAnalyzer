@@ -6,7 +6,15 @@ from datetime import datetime
 from typing import Any, Iterator
 
 from azure.synapse.artifacts import ArtifactsClient
-from azure.synapse.artifacts.models import RunFilterParameters
+from azure.synapse.artifacts.models import (
+    RunFilterParameters,
+    RunQueryFilter,
+    RunQueryFilterOperand,
+    RunQueryFilterOperator,
+    RunQueryOrder,
+    RunQueryOrderBy,
+    RunQueryOrderByField,
+)
 
 from ...auth import get_credential
 from ...config import AzureConfig
@@ -34,20 +42,41 @@ class RunHistoryClient:
         start: datetime,
         end: datetime,
         limit: int,
+        pipeline_names: list[str] | None = None,
     ) -> Iterator[dict[str, Any]]:
         """Yield one dict per pipeline run between ``start`` and ``end``.
 
         Stops after ``limit`` runs (set ``RunHistoryResult.truncated``).
-        Continuation tokens are followed transparently.
+        Continuation tokens are followed transparently. Results are ordered
+        by ``RunStart`` descending so that, when ``limit`` is hit, the
+        oldest runs are the ones dropped.
+
+        ``pipeline_names`` optionally restricts the query server-side via a
+        ``PipelineName In (...)`` filter — used for per-pipeline backfill
+        when the global pull hits the ``limit`` cap and starves
+        low-frequency pipelines.
         """
         emitted = 0
         cap = min(limit, _HARD_RUN_LIMIT)
         token: str | None = None
+        order_by = [RunQueryOrderBy(
+            order_by=RunQueryOrderByField.RUN_START,
+            order=RunQueryOrder.DESC,
+        )]
+        filters: list[RunQueryFilter] | None = None
+        if pipeline_names:
+            filters = [RunQueryFilter(
+                operand=RunQueryFilterOperand.PIPELINE_NAME,
+                operator=RunQueryFilterOperator.IN,
+                values=list(pipeline_names),
+            )]
         while True:
             params = RunFilterParameters(
                 last_updated_after=start,
                 last_updated_before=end,
                 continuation_token=token,
+                filters=filters,
+                order_by=order_by,
             )
             resp = self._artifacts.pipeline_run.query_pipeline_runs_by_workspace(params)
             for run in (resp.value or []):

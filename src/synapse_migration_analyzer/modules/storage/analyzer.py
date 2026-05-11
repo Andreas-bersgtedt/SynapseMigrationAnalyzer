@@ -12,11 +12,14 @@ Captures three things:
 from __future__ import annotations
 
 import logging
+import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
 from ...config import AppConfig
 from ...errors import format_error
+from ...progress import NullProgress, ProgressReporter
 from ..dedicated_pools.arm_client import SynapseArmClient
 from ..dedicated_pools.sql_client import DedicatedPoolSqlClient
 from .arm_client import StorageArmClient
@@ -36,12 +39,32 @@ _BYTES_PER_GB = 1024.0 * 1024.0 * 1024.0
 _MB_PER_GB = 1024.0
 
 
+def _capacity_concurrency() -> int:
+    try:
+        return max(1, int(os.getenv("SMA_STORAGE_CAPACITY_CONCURRENCY", "8")))
+    except ValueError:
+        return 8
+
+
+def _pool_dmv_concurrency() -> int:
+    try:
+        return max(1, int(os.getenv("SMA_STORAGE_POOL_DMV_CONCURRENCY", "4")))
+    except ValueError:
+        return 4
+
+
 class StorageAnalyzer:
-    def __init__(self, cfg: AppConfig) -> None:
+    def __init__(
+        self,
+        cfg: AppConfig,
+        *,
+        progress: ProgressReporter | None = None,
+    ) -> None:
         self._cfg = cfg
         self._arm = StorageArmClient(cfg.azure)
         self._monitor = StorageMonitorClient(cfg.azure)
         self._synapse_arm = SynapseArmClient(cfg.azure)
+        self._progress = progress or NullProgress()
 
     # ------------------------------------------------------------------ entry
     def run(self) -> StorageAnalysis:
@@ -53,6 +76,12 @@ class StorageAnalyzer:
         )
 
         accounts = self._collect_accounts(result)
+        # Total = accounts list (1) + 1 step per account capacity + 1 step per
+        # dedicated pool DMV. Discovery happens up-front in _collect_accounts;
+        # pool discovery happens lazily inside _collect_dedicated_pool_storage,
+        # so that helper raises the total via add_total when it finds pools.
+        self._progress.start(1 + len(accounts), label="enumerating accounts")
+        self._progress.step(label="account list")
         if accounts:
             self._collect_capacities(accounts, result)
 
@@ -82,14 +111,29 @@ class StorageAnalyzer:
         accounts: list[StorageAccountInventory],
         result: StorageAnalysis,
     ) -> None:
-        for acct in accounts:
+        max_workers = min(len(accounts), _capacity_concurrency())
+
+        def _one(acct: StorageAccountInventory):
             try:
-                vals = self._monitor.latest_capacity(acct.resource_id)
+                return acct, self._monitor.latest_capacity(acct.resource_id), None
             except Exception as exc:  # noqa: BLE001
+                return acct, None, exc
+
+        if max_workers <= 1:
+            results = [_one(a) for a in accounts]
+        else:
+            with ThreadPoolExecutor(max_workers=max_workers,
+                                    thread_name_prefix="sma-stor-cap") as ex:
+                results = list(ex.map(_one, accounts))
+
+        for acct, vals, exc in results:
+            if exc is not None:
                 log.warning("capacity metrics for %s failed: %s", acct.name, exc)
                 result.errors.append(format_error(f"capacity[{acct.name}]", exc))
+                self._progress.step(label=f"{acct.name} (failed)")
                 continue
             result.capacities.append(_build_capacity(acct.name, vals))
+            self._progress.step(label=acct.name)
         log.info("Storage capacity samples: %d", len(result.capacities))
 
     def _collect_dedicated_pool_storage(self, result: StorageAnalysis) -> None:
@@ -105,10 +149,14 @@ class StorageAnalyzer:
         if not pools:
             return
 
+        # Pool DMVs were not in the initial total — grow it now that we know
+        # how many pools to query.
+        self._progress.add_total(len(pools))
+
         sql_text = (_QUERIES_DIR / "pool_size.sql").read_text(encoding="utf-8")
         server = self._synapse_arm.workspace_sql_endpoint()
 
-        for pool in pools:
+        def _one(pool) -> tuple[DedicatedPoolStorage, str | None]:
             entry = DedicatedPoolStorage(
                 pool_name=pool.name,
                 captured_at=datetime.now(timezone.utc),
@@ -118,29 +166,36 @@ class StorageAnalyzer:
             )
             if (pool.status or "").lower() == "paused":
                 entry.notes.append("Pool is paused — DMV size query skipped.")
-                result.dedicated_pool_storage.append(entry)
-                continue
-
+                return entry, None
             try:
                 client = DedicatedPoolSqlClient(self._cfg, server, pool.name)
                 rows = client.fetch_all(sql_text)
             except Exception as exc:  # noqa: BLE001
                 log.warning("size DMV failed for %s: %s", pool.name, exc)
                 entry.notes.append(f"DMV failed: {exc}")
-                result.dedicated_pool_storage.append(entry)
-                result.errors.append(format_error(f"pool_size[{pool.name}]", exc))
-                continue
-
+                return entry, format_error(f"pool_size[{pool.name}]", exc)
             if rows:
                 _populate_pool_storage(entry, rows[0])
-
             if entry.max_size_bytes and entry.reserved_space_mb:
                 used_bytes = entry.reserved_space_mb * _BYTES_PER_MB
                 entry.used_pct_of_max = round(
                     (used_bytes / entry.max_size_bytes) * 100.0, 2
                 )
+            return entry, None
 
+        max_workers = min(len(pools), _pool_dmv_concurrency())
+        if max_workers <= 1:
+            outputs = [_one(p) for p in pools]
+        else:
+            with ThreadPoolExecutor(max_workers=max_workers,
+                                    thread_name_prefix="sma-stor-pool") as ex:
+                outputs = list(ex.map(_one, pools))
+
+        for entry, err in outputs:
             result.dedicated_pool_storage.append(entry)
+            if err:
+                result.errors.append(err)
+            self._progress.step(label=f"pool/{entry.pool_name}")
 
 
 # ---------------------------------------------------------------------------

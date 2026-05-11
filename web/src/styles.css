@@ -83,6 +83,26 @@ code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size
 .pill.info { background: rgba(88,166,255,.15); color: var(--info); }
 .pill.muted{ background: rgba(139,148,158,.15); color: var(--muted); }
 
+/* Run progress bars (inline beneath each module row) */
+.run-progress li { margin-bottom: 6px; }
+.run-progress-bar {
+  display: flex; align-items: center; gap: 8px; margin-top: 2px;
+}
+.run-progress-bar progress {
+  flex: 1 1 auto; height: 8px; max-width: 320px;
+  appearance: none; -webkit-appearance: none;
+  border: 0; border-radius: 4px; overflow: hidden;
+  background: rgba(139,148,158,.15);
+}
+.run-progress-bar progress::-webkit-progress-bar {
+  background: rgba(139,148,158,.15); border-radius: 4px;
+}
+.run-progress-bar progress::-webkit-progress-value {
+  background: var(--info); border-radius: 4px;
+  transition: width 0.2s ease-out;
+}
+.run-progress-bar progress::-moz-progress-bar { background: var(--info); }
+
 /* Tables */
 table { width: 100%; border-collapse: collapse; }
 th, td {

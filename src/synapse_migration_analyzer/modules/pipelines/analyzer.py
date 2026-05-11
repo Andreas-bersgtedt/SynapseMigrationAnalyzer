@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 
 from ...config import AppConfig
 from ...errors import format_error
+from ...progress import NullProgress, ProgressReporter
 from . import expression_compat, run_stats, schedule_mapper
 from .artifacts_client import ArtifactsApiClient
 from .models import (
@@ -24,9 +25,15 @@ log = logging.getLogger(__name__)
 
 
 class PipelinesAnalyzer:
-    def __init__(self, cfg: AppConfig) -> None:
+    def __init__(
+        self,
+        cfg: AppConfig,
+        *,
+        progress: ProgressReporter | None = None,
+    ) -> None:
         self._cfg = cfg
         self._api = ArtifactsApiClient(cfg.azure)
+        self._progress = progress or NullProgress()
 
     def run(self) -> PipelinesAnalysis:
         result = PipelinesAnalysis(
@@ -36,6 +43,11 @@ class PipelinesAnalyzer:
             artifacts_endpoint=self._api.endpoint,
             generated_at=datetime.now(timezone.utc),
         )
+
+        # 7 sub-tasks: pipelines+activities, linked_services, datasets,
+        # triggers, integration_runtimes, expression_compat, schedule_mapper.
+        # Run history (when enabled) adds N more steps via add_total below.
+        self._progress.start(7, label="enumerating pipelines")
 
         # Pipelines + activities (walked together so we only call the API once).
         try:
@@ -49,6 +61,7 @@ class PipelinesAnalyzer:
         except Exception as exc:  # noqa: BLE001
             log.warning("pipelines collection failed: %s", exc)
             result.errors.append(format_error("pipelines", exc))
+        self._progress.step(label="pipelines+activities")
 
         for label, fn, attr in (
             ("linked_services", self._api.list_linked_services, "linked_services"),
@@ -61,6 +74,7 @@ class PipelinesAnalyzer:
             except Exception as exc:  # noqa: BLE001
                 log.warning("%s collection failed: %s", label, exc)
                 result.errors.append(format_error(label, exc))
+            self._progress.step(label=label)
 
         # v2 — expression-language compatibility scan over activity payloads.
         try:
@@ -77,6 +91,7 @@ class PipelinesAnalyzer:
         except Exception as exc:  # noqa: BLE001
             log.warning("expression_compat failed: %s", exc)
             result.errors.append(f"expression_compat: {exc}")
+        self._progress.step(label="expression_compat")
 
         # v2 — trigger schedule → Fabric schedule mapping.
         try:
@@ -97,14 +112,17 @@ class PipelinesAnalyzer:
         except Exception as exc:  # noqa: BLE001
             log.warning("schedule_mapper failed: %s", exc)
             result.errors.append(f"schedule_mapper: {exc}")
+        self._progress.step(label="schedule_mapper")
 
         # v3 — pipeline run history (counts / success rates / data movement).
         if _env_flag("SMA_PIPELINES_RUN_HISTORY", default=True):
+            self._progress.add_total(1)
             try:
                 result.run_history = self._collect_run_history(result)
             except Exception as exc:  # noqa: BLE001
                 log.warning("run_history collection failed: %s", exc)
                 result.errors.append(format_error("run_history", exc))
+            self._progress.step(label="run_history")
 
         return result
 
@@ -134,13 +152,58 @@ class PipelinesAnalyzer:
 
         client = RunHistoryClient(self._cfg.azure)
 
-        # Pull all runs first.
+        # Pull all runs first (ordered RunStart DESC server-side, so the
+        # most recent runs are kept when the cap is hit).
         runs: list[dict] = []
         for run in client.iter_pipeline_runs(start=start, end=end, limit=run_limit):
             runs.append(run)
         history.fetched_run_count = len(runs)
         if len(runs) >= run_limit:
             history.truncated = True
+
+        # When the global cap was hit, low-frequency pipelines may have been
+        # starved by a few high-volume ones. For every pipeline that ended
+        # up with zero runs, do a best-effort per-pipeline backfill query
+        # so the dashboard at least shows their last few executions. We cap
+        # this aggressively (10 runs / pipeline, batched 25 at a time) to
+        # avoid amplifying load on Synapse.
+        if history.truncated:
+            seen_pipelines: set[str] = {
+                r.get("pipeline_name") for r in runs if r.get("pipeline_name")
+            }
+            missing = [
+                p.name for p in result.pipelines if p.name and p.name not in seen_pipelines
+            ]
+            if missing:
+                per_pipeline_cap = _env_int(
+                    "SMA_PIPELINES_RUN_BACKFILL_PER_PIPELINE", default=10, minimum=1,
+                )
+                batch_size = 25
+                backfill_total = 0
+                for i in range(0, len(missing), batch_size):
+                    chunk = missing[i:i + batch_size]
+                    # Per-pipeline cap × chunk-size upper bound for this batch.
+                    chunk_cap = per_pipeline_cap * len(chunk)
+                    try:
+                        for r in client.iter_pipeline_runs(
+                            start=start,
+                            end=end,
+                            limit=chunk_cap,
+                            pipeline_names=chunk,
+                        ):
+                            runs.append(r)
+                            backfill_total += 1
+                    except Exception as exc:  # noqa: BLE001
+                        log.debug("backfill[%s] failed: %s", chunk, exc)
+                        result.errors.append(format_error(
+                            f"runs_backfill[{','.join(chunk)}]", exc,
+                        ))
+                if backfill_total:
+                    log.info(
+                        "Backfilled %d runs across %d previously-missing pipelines",
+                        backfill_total, len(missing),
+                    )
+                    history.fetched_run_count = len(runs)
 
         # Determine which pipelines could plausibly emit data-movement metrics.
         dm_set = run_stats.pipelines_with_data_movement(
@@ -225,6 +288,9 @@ class PipelinesAnalyzer:
             runs=runs,
             activity_runs_by_run_id=activity_runs_by_run_id,
             non_copy_activity_counts=run_stats.non_copy_activity_counts(
+                [a.model_dump() for a in result.activities]
+            ),
+            dataflow_cores_by_pipeline_activity=run_stats.dataflow_cores_by_pipeline_activity(
                 [a.model_dump() for a in result.activities]
             ),
             now=end,

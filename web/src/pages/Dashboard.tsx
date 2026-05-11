@@ -80,6 +80,7 @@ export default function Dashboard() {
       const w = p.windows.find((w) => w.window_days === 7) ?? p.windows[0];
       if (!w) continue;
       totalCuHr += w.est_cu_hours_from_diu ?? 0;
+      totalCuHr += w.est_cu_hours_from_vcore ?? 0;
       totalCuHr += w.est_cu_hours_from_orchestration ?? 0;
       window = w.window_days;
     }
@@ -300,10 +301,13 @@ function PipelinesSection({ pipelines }: { pipelines: import("../types").Pipelin
   const totalDataMb = stats.reduce((s, r) => s + (r.w?.total_data_moved_mb ?? 0), 0);
   const totalDiuHours = stats.reduce((s, r) => s + (r.w?.total_diu_hours ?? 0), 0);
   const totalCuHoursDm = stats.reduce((s, r) => s + (r.w?.est_cu_hours_from_diu ?? 0), 0);
+  const totalVcoreHours = stats.reduce((s, r) => s + (r.w?.total_vcore_hours ?? 0), 0);
+  const totalCuHoursDf = stats.reduce((s, r) => s + (r.w?.est_cu_hours_from_vcore ?? 0), 0);
   const totalCuHoursOrch = stats.reduce((s, r) => s + (r.w?.est_cu_hours_from_orchestration ?? 0), 0);
   const totalNonCopyRuns = stats.reduce((s, r) => s + (r.w?.est_non_copy_activity_runs ?? 0), 0);
-  const totalCuHours = totalCuHoursDm + totalCuHoursOrch;
+  const totalCuHours = totalCuHoursDm + totalCuHoursDf + totalCuHoursOrch;
   const dataMovingPipelines = stats.filter((r) => r.has_data_movement && (r.w?.total_data_moved_mb ?? 0) > 0).length;
+  const dataFlowPipelines = stats.filter((r) => (r.w?.total_vcore_hours ?? 0) > 0).length;
   const dailyRuns = totalRuns / window;
   const dailyDataMb = totalDataMb / window;
   // Convert avg daily CU-hours into a steady-state CU equivalent
@@ -344,7 +348,7 @@ function PipelinesSection({ pipelines }: { pipelines: import("../types").Pipelin
           label={`Integration capacity (last ${window} days)`}
           value={totalCuHours > 0 ? `${totalCuHours.toFixed(2)} CU-hr` : "—"}
           sub={totalCuHours > 0
-            ? `${totalCuHoursDm.toFixed(2)} from data movement (${totalDiuHours.toFixed(2)} DIU-hr) · ${totalCuHoursOrch.toFixed(2)} from orchestration (${fmtNum(totalNonCopyRuns)} non-copy runs) · ≈ ${dailyCuEquivalent.toFixed(2)} CU sustained`
+            ? `${totalCuHoursDm.toFixed(2)} from data movement (${totalDiuHours.toFixed(2)} DIU-hr) · ${totalCuHoursDf.toFixed(2)} from data flows (${totalVcoreHours.toFixed(2)} vCore-hr${dataFlowPipelines > 0 ? `, ${dataFlowPipelines} DF pipeline${dataFlowPipelines === 1 ? "" : "s"}` : ""}) · ${totalCuHoursOrch.toFixed(2)} from orchestration (${fmtNum(totalNonCopyRuns)} non-copy runs) · ≈ ${dailyCuEquivalent.toFixed(2)} CU sustained`
             : "no integration activity observed"}
         />
         <StatCard
@@ -365,6 +369,8 @@ function PipelinesSection({ pipelines }: { pipelines: import("../types").Pipelin
             <th className="num">Total moved</th>
             <th className="num">DIU-hr</th>
             <th className="num">CU-hr (DM)</th>
+            <th className="num">vCore-hr</th>
+            <th className="num">CU-hr (DF)</th>
             <th className="num">CU-hr (Orch)</th>
             <th>Last run</th>
           </tr>
@@ -380,6 +386,8 @@ function PipelinesSection({ pipelines }: { pipelines: import("../types").Pipelin
               <td className="num">{r.has_data_movement ? fmtMb(r.w!.total_data_moved_mb) : "—"}</td>
               <td className="num">{r.w?.total_diu_hours != null ? r.w.total_diu_hours.toFixed(2) : "—"}</td>
               <td className="num">{r.w?.est_cu_hours_from_diu != null ? r.w.est_cu_hours_from_diu.toFixed(2) : "—"}</td>
+              <td className="num">{r.w?.total_vcore_hours != null ? r.w.total_vcore_hours.toFixed(2) : "—"}</td>
+              <td className="num">{r.w?.est_cu_hours_from_vcore != null ? r.w.est_cu_hours_from_vcore.toFixed(2) : "—"}</td>
               <td className="num">{(r.w?.est_cu_hours_from_orchestration ?? 0).toFixed(3)}</td>
               <td className="small muted">
                 {r.last ? new Date(r.last).toLocaleString() : "—"}
