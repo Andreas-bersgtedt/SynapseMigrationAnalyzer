@@ -46,6 +46,15 @@ export interface CapacityProjection {
   recommended_sku: string;
   headroom_pct: number;
   notes: string[];
+  // v2.6.2 — per-component CU contribution (post-headroom). Older runs
+  // serialised before this release will be missing these fields.
+  dwu_cu_contribution?: number;
+  spark_cu_contribution?: number;
+  pipelines_cu_contribution?: number;
+  // Serverless SQL contribution (heuristic 0.02 CU per 60 GB × duration).
+  serverless_cu_contribution?: number;
+  // Raw peak-day CU-hours for serverless SQL (pre-24h smoothing).
+  serverless_peak_day_cu_hours?: number;
 }
 
 export interface RunbookStep {
@@ -288,6 +297,72 @@ export interface PipelinesReport {
 }
 
 // ---------------------------------------------------------------------------
+// spark_pools.json
+// ---------------------------------------------------------------------------
+
+export interface SparkRunRecord {
+  livy_id: number;
+  kind: "scheduled" | "interactive";
+  pool: string;
+  name?: string | null;
+  app_id?: string | null;
+  submitter_id?: string | null;
+  submitter_name?: string | null;
+  artifact_id?: string | null;
+  state?: string | null;
+  result?: string | null;
+  outcome: "succeeded" | "failed" | "in_progress";
+  submitted_at?: string | null;
+  ended_at?: string | null;
+  duration_seconds?: number | null;
+  driver_cores?: number | null;
+  executor_cores?: number | null;
+  num_executors?: number | null;
+  total_vcores?: number | null;
+  vcore_seconds?: number | null;
+  vcore_hours?: number | null;
+  // Fabric CU-hours = vcore_hours * 0.5 (1 CU = 2 Spark vCores).
+  est_cu_hours_fabric_spark?: number | null;
+}
+
+export interface SparkRunWindowStats {
+  window_days: number;
+  run_count: number;
+  succeeded: number;
+  failed: number;
+  in_progress: number;
+  total_duration_hours: number;
+  total_vcore_hours: number;
+  est_cu_hours_fabric_spark: number;
+  avg_vcore_hours_per_run?: number | null;
+}
+
+export interface SparkPoolRunStats {
+  pool: string;
+  kind: "scheduled" | "interactive";
+  windows: SparkRunWindowStats[];
+}
+
+export interface SparkPoolsReport {
+  workspace_name?: string | null;
+  subscription_id?: string | null;
+  resource_group?: string | null;
+  generated_at: string;
+  pools?: Array<{
+    name: string;
+    spark_version?: string | null;
+    node_size?: string | null;
+    node_count?: number | null;
+    auto_scale_enabled?: boolean;
+  }>;
+  notebooks?: Array<{ name: string }>;
+  spark_job_definitions?: Array<{ name: string }>;
+  spark_runs?: SparkRunRecord[];
+  run_stats?: SparkPoolRunStats[];
+  errors?: string[];
+}
+
+// ---------------------------------------------------------------------------
 // serverless_pools.json
 // ---------------------------------------------------------------------------
 
@@ -295,6 +370,12 @@ export interface ServerlessDailyUsage {
   day: string;                  // "YYYY-MM-DD" (UTC)
   request_count: number;
   data_processed_mb: number;
+  // Sum of per-query execution time for the day (seconds). Optional for
+  // back-compat with pre-v2.7 artefacts.
+  duration_seconds?: number;
+  // SUM(data_processed_mb * duration_seconds) for the day — used by the
+  // Fabric CU heuristic. Optional for back-compat.
+  mb_seconds?: number;
 }
 
 export interface ServerlessCostEstimate {

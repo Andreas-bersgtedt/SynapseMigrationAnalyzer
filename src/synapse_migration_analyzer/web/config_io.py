@@ -269,6 +269,67 @@ def validate_config_live(env_file: Path) -> tuple[list[ConfigCheck], list[Worksp
             detail=str(exc), category="Data plane",
         ))
 
+    # --- Data plane: Spark Livy (Synapse Compute Operator on a pool) -------
+    # The spark_pools module's Livy job-history collection requires the
+    # Synapse RBAC action `Microsoft.Synapse/workspaces/bigDataPools/useCompute/action`,
+    # which is granted by the **Synapse Compute Operator** role (or higher,
+    # e.g. Synapse Administrator). The Synapse Artifact User role is *not*
+    # sufficient for Livy — it only covers the artifact catalog. We probe the
+    # first available Spark pool with a tiny `get_spark_batch_jobs(size=1)`
+    # call; a 403 here means the role assignment is missing.
+    try:
+        from azure.mgmt.synapse import SynapseManagementClient
+        from azure.synapse.spark import SparkClient
+
+        endpoint = f"https://{workspace}.dev.azuresynapse.net"
+        mgmt = SynapseManagementClient(cred, subscription)
+        pool_names = [
+            p.name for p in mgmt.big_data_pools.list_by_workspace(rg, workspace)
+        ]
+        if not pool_names:
+            checks.append(ConfigCheck(
+                name="Spark Livy (Synapse Compute Operator)", ok=True,
+                detail="no Spark pools in workspace — check skipped",
+                category="Data plane",
+            ))
+        else:
+            probe_pool = pool_names[0]
+            spark = SparkClient(
+                credential=cred, endpoint=endpoint,
+                spark_pool_name=probe_pool,
+                livy_api_version="2019-11-01-preview",
+            )
+            try:
+                spark.spark_batch.get_spark_batch_jobs(
+                    from_parameter=0, size=1, detailed=False,
+                )
+                checks.append(ConfigCheck(
+                    name="Spark Livy (Synapse Compute Operator)", ok=True,
+                    detail=(
+                        f"useCompute granted on pool '{probe_pool}' "
+                        f"({len(pool_names)} pool(s) probed)"
+                    ),
+                    category="Data plane",
+                ))
+            finally:
+                try:
+                    spark.close()
+                except Exception:  # noqa: BLE001
+                    pass
+    except ImportError:
+        checks.append(ConfigCheck(
+            name="Spark Livy (Synapse Compute Operator)", ok=False,
+            detail="azure-synapse-spark not installed", category="Data plane",
+        ))
+    except Exception as exc:  # noqa: BLE001
+        # Common case: 403 with required action
+        # `Microsoft.Synapse/workspaces/bigDataPools/useCompute/action`.
+        # Surface verbatim so the user sees exactly which role to grant.
+        checks.append(ConfigCheck(
+            name="Spark Livy (Synapse Compute Operator)", ok=False,
+            detail=str(exc), category="Data plane",
+        ))
+
     # --- Data plane: SQL token + serverless SELECT 1 -----------------------
     sql_token_ok = False
     try:

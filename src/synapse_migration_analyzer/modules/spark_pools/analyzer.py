@@ -2,18 +2,23 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta, timezone
 
 from ...config import AppConfig
 from ...errors import format_error
 from ...progress import NullProgress, ProgressReporter
 from .arm_client import SparkArmClient
 from .artifacts_client import SparkArtifactsClient
+from .spark_history_client import SparkHistoryClient
+from .spark_run_stats import aggregate_runs
 from . import notebook_lint, runtime_compat
 from .models import (
     NotebookLintFinding,
     RuntimeMappingResult,
     SparkAnalysis,
+    SparkRunRecord,
 )
 
 log = logging.getLogger(__name__)
@@ -38,9 +43,9 @@ class SparkPoolsAnalyzer:
             resource_group=self._cfg.azure.resource_group,
             generated_at=datetime.now(timezone.utc),
         )
-        # 6 sub-tasks: list_pools, list_notebooks, list_sjd, runtime_compat,
-        # notebook_lint, libraries.
-        self._progress.start(6, label="enumerating Spark assets")
+        # 7 sub-tasks: list_pools, list_notebooks, list_sjd, runtime_compat,
+        # notebook_lint, libraries, spark_history (optional, gated by env var).
+        self._progress.start(7, label="enumerating Spark assets")
         try:
             result.pools = list(self._arm.list_pools())
         except Exception as exc:  # noqa: BLE001
@@ -118,4 +123,73 @@ class SparkPoolsAnalyzer:
             log.info("list_workspace_packages unavailable: %s", exc)
         self._progress.step(label="libraries")
 
+        # v2 — Spark Livy job history (interactive sessions + scheduled batches).
+        # Gated by SMA_SPARK_RUN_HISTORY (default on). Per-pool I/O is fanned out
+        # with ThreadPoolExecutor to bound wall-clock on workspaces with many pools.
+        if _env_flag("SMA_SPARK_RUN_HISTORY", default=True) and result.pools:
+            days = _env_int("SMA_SPARK_RUN_DAYS", default=90, minimum=1)
+            limit = _env_int("SMA_SPARK_RUN_LIMIT", default=5000, minimum=1)
+            page_size = _env_int("SMA_SPARK_RUN_PAGE_SIZE", default=20, minimum=1)
+            concurrency = _env_int("SMA_SPARK_RUN_CONCURRENCY", default=4, minimum=1)
+            start = datetime.now(timezone.utc) - timedelta(days=days)
+            history = SparkHistoryClient(self._cfg.azure)
+            collected: list[SparkRunRecord] = []
+
+            def _fetch(pool_name: str) -> list[SparkRunRecord]:
+                runs: list[SparkRunRecord] = []
+                try:
+                    runs.extend(history.iter_batch_jobs(
+                        pool_name, start=start, limit=limit, page_size=page_size,
+                    ))
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("spark batch history (%s) failed: %s", pool_name, exc)
+                    result.errors.append(
+                        format_error(f"spark_history_batches[{pool_name}]", exc)
+                    )
+                try:
+                    runs.extend(history.iter_sessions(
+                        pool_name, start=start, limit=limit, page_size=page_size,
+                    ))
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("spark session history (%s) failed: %s", pool_name, exc)
+                    result.errors.append(
+                        format_error(f"spark_history_sessions[{pool_name}]", exc)
+                    )
+                return runs
+
+            try:
+                pool_names = [p.name for p in result.pools]
+                with ThreadPoolExecutor(max_workers=concurrency) as ex:
+                    futures = {ex.submit(_fetch, name): name for name in pool_names}
+                    for fut in as_completed(futures):
+                        try:
+                            collected.extend(fut.result())
+                        except Exception as exc:  # noqa: BLE001
+                            log.warning("spark history fetch failed: %s", exc)
+                            result.errors.append(format_error("spark_history", exc))
+                result.spark_runs = collected
+                result.run_stats = aggregate_runs(collected)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("spark_history aggregation failed: %s", exc)
+                result.errors.append(format_error("spark_history", exc))
+        self._progress.step(label="spark_history")
+
         return result
+
+
+def _env_flag(name: str, *, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    return raw.strip().lower() not in ("0", "false", "no", "off")
+
+
+def _env_int(name: str, *, default: int, minimum: int = 0) -> int:
+    raw = os.getenv(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        n = int(raw)
+    except ValueError:
+        return default
+    return max(minimum, n)

@@ -34,6 +34,7 @@ _PACKAGES = (
     "azure.mgmt.monitor",
     "azure.mgmt.storage",
     "azure.synapse.artifacts",
+    "azure.synapse.spark",
     "pyodbc",
     "pydantic",
     "click",
@@ -239,6 +240,61 @@ def _check_workspace_reachable(skip_live: bool) -> CheckResult:
         return CheckResult("Synapse workspace reachable", "fail", str(exc))
 
 
+def _check_spark_livy(skip_live: bool) -> CheckResult:
+    """Probe Spark Livy on the first available pool — requires the Synapse RBAC
+    action ``Microsoft.Synapse/workspaces/bigDataPools/useCompute/action`` (granted
+    by **Synapse Compute Operator** or higher). Returns ``warn`` if the workspace
+    has no Spark pools (then `analyze-spark-pools` Livy history is N/A)."""
+    name = "Spark Livy (Synapse Compute Operator)"
+    if skip_live:
+        return CheckResult(name, "skip", "live checks disabled (--offline)", required=False)
+    if any(not os.getenv(k) for k in _REQUIRED_ENV):
+        return CheckResult(name, "skip", "env vars not set", required=False)
+    try:
+        from azure.identity import ClientSecretCredential
+        from azure.mgmt.synapse import SynapseManagementClient
+        from azure.synapse.spark import SparkClient
+
+        cred = ClientSecretCredential(
+            tenant_id=os.environ["AZURE_TENANT_ID"],
+            client_id=os.environ["AZURE_CLIENT_ID"],
+            client_secret=os.environ["AZURE_CLIENT_SECRET"],
+        )
+        ws_name = os.environ["SYNAPSE_WORKSPACE_NAME"]
+        rg_name = os.environ["SYNAPSE_RESOURCE_GROUP"]
+        mgmt = SynapseManagementClient(cred, os.environ["AZURE_SUBSCRIPTION_ID"])
+        pool_names = [p.name for p in mgmt.big_data_pools.list_by_workspace(rg_name, ws_name)]
+        if not pool_names:
+            return CheckResult(
+                name, "warn",
+                "no Spark pools in workspace — Livy history is N/A",
+                required=False,
+            )
+        probe = pool_names[0]
+        spark = SparkClient(
+            credential=cred,
+            endpoint=f"https://{ws_name}.dev.azuresynapse.net",
+            spark_pool_name=probe,
+            livy_api_version="2019-11-01-preview",
+        )
+        try:
+            spark.spark_batch.get_spark_batch_jobs(from_parameter=0, size=1, detailed=False)
+        finally:
+            try:
+                spark.close()
+            except Exception:  # noqa: BLE001
+                pass
+        return CheckResult(
+            name, "pass",
+            f"useCompute granted on '{probe}' ({len(pool_names)} pool(s))",
+        )
+    except Exception as exc:  # noqa: BLE001
+        # 403 here typically means the SP lacks
+        # `Microsoft.Synapse/workspaces/bigDataPools/useCompute/action`,
+        # i.e. the **Synapse Compute Operator** role on the pool.
+        return CheckResult(name, "fail", str(exc), required=False)
+
+
 def _check_sql_token(skip_live: bool) -> CheckResult:
     if skip_live:
         return CheckResult("SQL access token", "skip", "live checks disabled (--offline)", required=False)
@@ -274,6 +330,7 @@ def run_checks(*, offline: bool = False) -> DoctorReport:
         _check_output_dir,
         lambda: _check_aad_token(offline),
         lambda: _check_workspace_reachable(offline),
+        lambda: _check_spark_livy(offline),
         lambda: _check_sql_token(offline),
     ]
     for fn in checks:

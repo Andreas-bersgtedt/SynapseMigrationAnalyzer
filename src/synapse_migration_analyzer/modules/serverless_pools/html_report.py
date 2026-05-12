@@ -267,9 +267,9 @@ _TEMPLATE = """<!doctype html>
 {% if r.daily_usage %}
 <h2 id="daily">Daily data processed</h2>
 <table>
- <tr><th>Day</th><th class="num">Requests</th><th class="num">Data processed (MB)</th></tr>
+ <tr><th>Day</th><th class="num">Requests</th><th class="num">Data processed (MB)</th><th class="num">Execution time (s)</th></tr>
  {% for d in r.daily_usage %}
- <tr><td class="nowrap">{{ d.day }}</td><td class="num">{{ d.request_count }}</td><td class="num">{{ d.data_processed_mb }}</td></tr>
+ <tr><td class="nowrap">{{ d.day }}</td><td class="num">{{ d.request_count }}</td><td class="num">{{ d.data_processed_mb }}</td><td class="num">{{ d.duration_seconds }}</td></tr>
  {% endfor %}
 </table>
 {% endif %}

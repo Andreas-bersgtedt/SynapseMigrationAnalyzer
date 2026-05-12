@@ -51,6 +51,14 @@ class ServerlessDailyUsage(BaseModel):
     day: str
     request_count: int = 0
     data_processed_mb: int = 0
+    # Sum of per-query DATEDIFF(SECOND, start_time, end_time) for the day.
+    # Lets us surface aggregate query-execution time alongside query volume
+    # and data volume. Optional for backwards compat with pre-v2.7 artefacts.
+    duration_seconds: int = 0
+    # SUM(data_processed_mb * duration_seconds) for the day. Powers the
+    # Fabric SQL Analytics Endpoint CU projection (data x time).
+    # Optional for backwards compat with pre-v2.7 artefacts.
+    mb_seconds: int = 0
 
 
 class ServerlessCostEstimate(BaseModel):

@@ -168,7 +168,7 @@ The `Reader` role above covers **control-plane** (ARM) calls. Each module that h
 
 1. **Microsoft Entra ID → App registrations → + New registration** — name it `sma-analyzer`, accept defaults. After creation, copy **Application (client) ID** → `AZURE_CLIENT_ID` and **Directory (tenant) ID** → `AZURE_TENANT_ID`.
 2. **Certificates & secrets → + New client secret** — set an expiry, copy the **Value** column immediately → `AZURE_CLIENT_SECRET`.
-3. **Synapse workspace → Access control (IAM) → + Add → Add role assignment** — role **Reader**, assign access to **User, group, or service principal**, search for `sma-analyzer`, save. Repeat for **Monitoring Reader** (subscription / resource-group scope) if you plan to run `sma analyze-monitoring`, and for **Synapse Artifact User** (Synapse Studio → Manage → Access control) for `sma analyze-pipelines` / `sma analyze-spark-pools`.
+3. **Synapse workspace → Access control (IAM) → + Add → Add role assignment** — role **Reader**, assign access to **User, group, or service principal**, search for `sma-analyzer`, save. Repeat for **Monitoring Reader** (subscription / resource-group scope) if you plan to run `sma analyze-monitoring`, and for **Synapse Artifact User** (Synapse Studio → Manage → Access control) for `sma analyze-pipelines` / `sma analyze-spark-pools`. Add **Synapse Compute Operator** (same Synapse RBAC blade) if you want `analyze-spark-pools` to also collect Livy job-history (interactive sessions + scheduled batches with Fabric CU-h projection) — Synapse Artifact User alone is not sufficient.
 4. Continue with [§0.4](#04-configure-env).
 
 ### 0.3.5 Permissions cheat-sheet (read this if you hit `Unauthorized`)
@@ -179,6 +179,7 @@ Azure RBAC and **Synapse RBAC** are *separate*. Being Owner of the subscription 
 |---|---|---|---|
 | **Azure ARM (control plane)** | Pool definitions, Spark pool ARM details, dedicated/serverless SQL pool listing | **Reader** | Subscription, resource group, **or** workspace resource (any of these) |
 | **Synapse artifacts (data plane)** — `*.dev.azuresynapse.net` | `analyze-pipelines`, `analyze-spark-pools` (notebooks, SJDs, linked services, datasets, triggers) | **Synapse Artifact User** (read-only) or **Synapse User** | Synapse Studio → **Manage → Access control** at workspace scope |
+| **Synapse Spark Livy** — `*.dev.azuresynapse.net/livyApi` | `analyze-spark-pools` Livy job-history (interactive sessions + scheduled batches, vCore-h, Fabric CU-h projection) | **Synapse Compute Operator** (or higher, e.g. **Synapse Administrator**) — grants the action `Microsoft.Synapse/workspaces/bigDataPools/useCompute/action`. Synapse Artifact User is **not** sufficient for Livy. | Synapse Studio → **Manage → Access control**, scope `Workspace` (or per Spark pool) |
 | **Azure Monitor metrics** | `analyze-monitoring` | **Monitoring Reader** | Subscription or resource group containing the workspace |
 | **Azure Cost Management** | `analyze-cost` | **Cost Management Reader** | Subscription or the workspace's resource group |
 | **SQL endpoints** (dedicated + serverless) | `analyze-dedicated-pools`, `analyze-serverless-pools` | SQL `CREATE USER [<sp-name>] FROM EXTERNAL PROVIDER;` + `db_datareader` + `GRANT VIEW DATABASE STATE` + `GRANT VIEW DEFINITION` (so procedures / functions are visible in `sys.objects` / `sys.sql_modules`) | Inside each database (run as a SQL admin) |
@@ -202,6 +203,8 @@ az synapse role assignment create `
 | `notebooks: (Unauthorized) ... Microsoft.Synapse/workspaces/artifacts/read` | Missing Synapse RBAC | Assign **Synapse Artifact User** at workspace scope |
 | `spark_job_definitions: (Unauthorized) ... artifacts/read` | Missing Synapse RBAC | Assign **Synapse Artifact User** at workspace scope |
 | `pipelines: (Unauthorized) ... artifacts/read` | Missing Synapse RBAC | Assign **Synapse Artifact User** at workspace scope |
+| `spark_history_batches[<pool>]: (Unauthorized) ... Microsoft.Synapse/workspaces/bigDataPools/useCompute/action` | Missing Synapse RBAC for Spark Livy. Synapse Artifact User does **not** include `useCompute`. | Assign **Synapse Compute Operator** (or higher) at workspace scope or per Spark pool |
+| `spark_history_sessions[<pool>]: (Unauthorized) ... bigDataPools/useCompute/action` | Same as above (Livy session listing requires the same action) | Assign **Synapse Compute Operator** |
 | `metrics[...]: (Forbidden)` from Azure Monitor | Missing **Monitoring Reader** | Assign **Monitoring Reader** at the resource-group / subscription scope |
 | `Login failed for user '<token-identified principal>'` (SQL) | SP not added to the database | Run `CREATE USER [<sp-name>] FROM EXTERNAL PROVIDER;` then `ALTER ROLE db_datareader ADD MEMBER [<sp-name>];` |
 
@@ -446,10 +449,13 @@ Inventories Apache Spark pools (a.k.a. *big data pools*) attached to the workspa
 | Provisioning state, creation date, tags | same |
 | Notebook inventory (language, kernel, attached pool, cell count, size, imports) | Synapse Artifacts `notebook.get_notebooks_by_workspace` |
 | Spark job definitions (target pool, main file, class, conf, args) | Synapse Artifacts `spark_job_definition.get_spark_job_definitions_by_workspace` |
+| **Spark Livy job history** (interactive sessions + scheduled batch jobs, per pool) with vCore-second and **Fabric CU-hour** projection | `azure-synapse-spark` (`SparkClient` per pool, Livy `2019-11-01-preview`) |
 
 ### 3.2 Module-specific prerequisites
 
 Notebooks and Spark job definitions live in the **Synapse Artifacts** plane, so the SP needs **Synapse Artifact User** (or higher) on the workspace — same role as `analyze-pipelines`. Without it, those calls are skipped (errors are logged into the result's `errors` list) and only the control-plane pool inventory is captured.
+
+Livy job history (sessions + batches) requires **Synapse Compute Operator** (or higher) on each Spark pool — Artifact User alone is **not** sufficient. Failures are logged per pool but never abort the rest of the module.
 
 ### 3.3 Run & outputs
 
@@ -461,6 +467,22 @@ Produces:
 - `spark_pools.json`, `spark_pools.md`, `spark_pools.html`, `spark_pools.csv`
 - `spark_notebooks.csv` (one row per notebook with extracted `imports` column)
 - `spark_job_definitions.csv` (target pool, main file, class, args)
+
+### 3.4 Spark execution (Livy history)
+
+For each pool, the analyzer pulls Livy **batches** (`spark_batch.get_spark_batch_jobs`) and **sessions** (`spark_session.get_spark_sessions`), classifies them as `scheduled` (batches — Spark Job Definitions and pipeline-triggered SparkJob activities) or `interactive` (sessions — notebook REPL), and per run extracts the cluster shape from `app_info`: `driver_cores + executor_cores × num_executors = total_vcores`. Wall-clock seconds × total_vcores → **vCore-seconds**, then `/3600` → vCore-hours, then `× 0.5` → **Fabric CU-hours** (1 CU = 2 Spark vCores per [Fabric Spark billing docs](https://learn.microsoft.com/fabric/data-engineering/billing-spark)).
+
+Per pool × kind × window the report surfaces: run count, succeeded / failed counts, total duration-hours, total vCore-hours, projected CU-hours, and avg vCore-hours per run.
+
+Tunable env vars:
+
+| Env var | Default | Notes |
+|---|---|---|
+| `SMA_SPARK_RUN_HISTORY` | `1` | Set to `0` to skip Livy history entirely |
+| `SMA_SPARK_RUN_DAYS` | `90` | Trailing-days lookback window |
+| `SMA_SPARK_RUN_LIMIT` | `5000` | Per-pool, per-kind run cap (oldest dropped) |
+| `SMA_SPARK_RUN_PAGE_SIZE` | `100` | Livy pagination page size (max 200) |
+| `SMA_SPARK_RUN_CONCURRENCY` | `4` | Parallel per-pool fetches via `ThreadPoolExecutor` |
 
 ---
 

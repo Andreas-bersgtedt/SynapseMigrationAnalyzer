@@ -60,6 +60,18 @@ class CapacityProjection(BaseModel):
     recommended_sku: str
     headroom_pct: int
     notes: list[str] = Field(default_factory=list)
+    # v2.6.2 — split components so the SPA can show the breakdown.
+    # All three are sustained-CU contributions to ``estimated_cu`` and
+    # default to 0.0 when the corresponding upstream module's data is
+    # not available.
+    dwu_cu_contribution: float = 0.0
+    spark_cu_contribution: float = 0.0
+    pipelines_cu_contribution: float = 0.0
+    serverless_cu_contribution: float = 0.0
+    # Pre-smoothing peak-day CU-hours for serverless SQL (sized at 0.02 CU
+    # per 60 GB scanned x duration). Exposed alongside the sustained CU so
+    # the SPA can surface the raw "worst day" number.
+    serverless_peak_day_cu_hours: float = 0.0
 
 
 class FabricMappingReport(BaseModel):

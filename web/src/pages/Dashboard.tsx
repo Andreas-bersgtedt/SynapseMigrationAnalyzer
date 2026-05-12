@@ -1,7 +1,8 @@
-import { loadFabricMapping, loadPipelines, loadServerless, loadStorage, detectMode, getRunIdFromHash } from "../api/loader";
+import { loadFabricMapping, loadPipelines, loadServerless, loadSparkPools, loadStorage, detectMode, getRunIdFromHash } from "../api/loader";
 import { useAsync } from "../hooks/useAsync";
 import { Empty, PctPill, ScorePill, SeverityPill, StatCard } from "../components/Atoms";
 import HelpLink from "../components/HelpLink";
+import { ProvenanceBadge, useCurrentRunMeta } from "../components/Provenance";
 import { areaLabel, effortLabel, moduleLabel } from "../lib/labels";
 import type { Recommendation, Severity, ModuleSummary } from "../types";
 
@@ -27,15 +28,63 @@ function fmtMb(mb: number | null | undefined): string {
   return `0 MB`;
 }
 
-export default function Dashboard() {
-  const { data: fm, loading } = useAsync(loadFabricMapping);
-  const { data: storage } = useAsync(loadStorage);
-  const { data: pipelines } = useAsync(loadPipelines);
-  const { data: serverless } = useAsync(loadServerless);
-  const { data: mode } = useAsync(detectMode);
+/**
+ * Renders a one-line banner under the workspace title when one or more
+ * module artefacts on the current run were carried forward from a prior
+ * workspace-matched run. Silent in static mode and when nothing was
+ * carried, so it never adds noise to a "clean" full run.
+ */
+function CarryForwardBanner({ runMeta }: { runMeta: import("../api/loader").RunMeta | null }) {
+  if (!runMeta) return null;
+  const carried = (runMeta.modules ?? []).filter((m) => m.state === "carried");
+  if (carried.length === 0) return null;
+  const refreshed = (runMeta.modules ?? [])
+    .filter((m) => m.state !== "carried" && m.state !== "queued")
+    .map((m) => m.name);
+  return (
+    <div
+      className="muted small"
+      style={{
+        marginBottom: 16,
+        padding: "6px 10px",
+        borderLeft: "3px solid #888",
+        background: "rgba(127,127,127,0.08)",
+      }}
+    >
+      ↺ Incremental run — refreshed{" "}
+      <strong>{refreshed.length > 0 ? refreshed.join(", ") : "(none)"}</strong>;
+      carried <strong>{carried.length}</strong> module{carried.length === 1 ? "" : "s"} forward
+      from prior run(s) (look for the <em>carried</em> pill on each section header).
+    </div>
+  );
+}
 
+export default function Dashboard() {
+  const { data: fm, loading: fmLoading } = useAsync(loadFabricMapping);
+  const { data: storage, loading: storageLoading } = useAsync(loadStorage);
+  const { data: pipelines, loading: pipelinesLoading } = useAsync(loadPipelines);
+  const { data: serverless, loading: serverlessLoading } = useAsync(loadServerless);
+  const { data: sparkPools, loading: sparkLoading } = useAsync(loadSparkPools);
+  const { data: mode } = useAsync(detectMode);
+  const runMeta = useCurrentRunMeta();
+
+  const loading =
+    fmLoading || storageLoading || pipelinesLoading || serverlessLoading || sparkLoading;
   if (loading) return <div className="empty">Loading…</div>;
-  if (!fm) {
+
+  // Has *any* module produced data? If so, render the dashboard with the
+  // sections that exist instead of bailing out because fabric_mapping.json
+  // is missing — e.g. when only the `spark_pools` module ran, we still want
+  // to show the Spark section instead of a hard error.
+  const hasAny = Boolean(
+    fm
+      || (storage && (storage.dedicated_pool_storage?.length || storage.accounts?.length || storage.capacities?.length))
+      || (pipelines?.run_history && pipelines.run_history.by_pipeline?.length)
+      || (sparkPools && (sparkPools.pools?.length || sparkPools.run_stats?.length || sparkPools.spark_runs?.length))
+      || (serverless && (serverless.databases?.length || serverless.daily_usage?.length))
+  );
+
+  if (!hasAny) {
     if (mode === "control-plane") {
       const runId = getRunIdFromHash();
       if (!runId) {
@@ -48,26 +97,27 @@ export default function Dashboard() {
       }
       return (
         <Empty>
-          No <code>fabric_mapping.json</code> for run <code>{runId}</code>.
-          Either the run is still in progress, the <code>fabric_mapping</code>
-          module wasn't selected, or the run failed before <code>fabric_mapping</code>
-          ran. See the <code>Runs</code> page for status.
+          No module output available for run <code>{runId}</code> yet.
+          The run may still be in progress, no modules were selected, or
+          the run failed before producing any artifacts. See the{" "}
+          <code>Runs</code> page for status.
         </Empty>
       );
     }
     return (
       <Empty>
-        No <code>fabric_mapping.json</code> found. Run{" "}
-        <code>sma analyze-all</code> first, then point the SPA at the output
-        directory (see <code>web/README.md</code>).
+        No analyzer output found. Run <code>sma analyze-all</code> (or a
+        specific module like <code>sma analyze-spark-pools</code>) first,
+        then point the SPA at the output directory (see{" "}
+        <code>web/README.md</code>).
       </Empty>
     );
   }
 
-  const rd = fm.readiness;
-  const cp = fm.capacity_projection;
+  const rd = fm?.readiness ?? null;
+  const cp = fm?.capacity_projection ?? null;
   const sevCount = (s: Severity) =>
-    rd?.counts?.[s] ?? fm.recommendations.filter((r: Recommendation) => r.severity === s).length;
+    rd?.counts?.[s] ?? (fm?.recommendations.filter((r: Recommendation) => r.severity === s).length ?? 0);
 
   // Steady-state CU from pipeline integration activity (DIU-hr + Orch CU-hr).
   // 1 CU sustained = 24 CU-hr / day, so daily_CU = (Σ est CU-hr ÷ window_days) ÷ 24.
@@ -88,16 +138,39 @@ export default function Dashboard() {
     return (totalCuHr / window) / 24;
   })();
 
+  // Steady-state CU from Spark Livy job history (notebook sessions + scheduled
+  // batches). vCore-hours are already converted to Fabric CU-hours by the
+  // analyzer using the documented 1 CU = 2 Spark vCores rate, so we just sum
+  // the per-pool / per-kind 7-day window totals.
+  const sparkDailyCu = (() => {
+    const stats = sparkPools?.run_stats;
+    if (!stats || stats.length === 0) return 0;
+    let totalCuHr = 0;
+    let window = 0;
+    for (const s of stats) {
+      const w = s.windows.find((w) => w.window_days === 7) ?? s.windows[0];
+      if (!w) continue;
+      totalCuHr += w.est_cu_hours_fabric_spark ?? 0;
+      window = w.window_days;
+    }
+    if (window <= 0) return 0;
+    return (totalCuHr / window) / 24;
+  })();
+
   return (
     <>
       <h1 style={{ margin: "0 0 4px" }}>
-        {fm.workspace_name ?? "(workspace)"} <HelpLink slug="04-dashboard" />
+        {fm?.workspace_name ?? "(workspace)"} <HelpLink slug="04-dashboard" />
       </h1>
       <div className="muted small" style={{ marginBottom: 16 }}>
-        Generated {new Date(fm.generated_at).toLocaleString()}
+        {fm
+          ? `Generated ${new Date(fm.generated_at).toLocaleString()}`
+          : "Partial run — fabric_mapping module did not run, showing available sections."}
       </div>
+      <CarryForwardBanner runMeta={runMeta} />
 
-      <div className="grid cols-4">
+      {fm && (
+        <div className="grid cols-4">
         <StatCard
           label="Readiness score"
           value={rd ? <ScorePill score={rd.score} /> : "—"}
@@ -128,17 +201,50 @@ export default function Dashboard() {
           value={cp?.recommended_sku ?? "—"}
           sub={
             cp
-              ? `peak DWU ${Math.round(cp.peak_dwu)} → CU ${cp.estimated_cu.toFixed(1)} (${cp.headroom_pct}% headroom)${
-                  integrationDailyCu > 0
-                    ? ` · + ${integrationDailyCu.toFixed(2)} CU/day from pipelines`
-                    : ""
-                }`
-              : integrationDailyCu > 0
-                ? `no monitoring data · ${integrationDailyCu.toFixed(2)} CU/day from pipelines`
+              ? (() => {
+                  // v2.6.2 — backend now includes Spark + Pipelines CU
+                  // in estimated_cu. Show the breakdown when available.
+                  // Adaptive precision: contributions can be sub-CU for
+                  // light workloads (esp. serverless), so we keep 2–3 dp
+                  // when they would otherwise round to 0.0.
+                  const fmtCu = (v: number) => {
+                    if (v >= 1) return v.toFixed(1);
+                    if (v >= 0.1) return v.toFixed(2);
+                    if (v >= 0.01) return v.toFixed(3);
+                    if (v > 0) return "<0.01";
+                    return v.toFixed(1);
+                  };
+                  const dwuCu = cp.dwu_cu_contribution ?? 0;
+                  const sparkCu = cp.spark_cu_contribution ?? 0;
+                  const pipeCu = cp.pipelines_cu_contribution ?? 0;
+                  const slessCu = cp.serverless_cu_contribution ?? 0;
+                  const slessPeakDayCuH = cp.serverless_peak_day_cu_hours ?? 0;
+                  const parts: string[] = [];
+                  if (dwuCu > 0) parts.push(`DW ${fmtCu(dwuCu)}`);
+                  if (sparkCu > 0) parts.push(`Spark ${fmtCu(sparkCu)}`);
+                  if (pipeCu > 0) parts.push(`Pipelines ${fmtCu(pipeCu)}`);
+                  if (slessCu > 0) parts.push(`Serverless ${fmtCu(slessCu)}`);
+                  const breakdown = parts.length > 0 ? ` · ${parts.join(" + ")} CU` : "";
+                  const slessNote = slessPeakDayCuH > 0
+                    ? ` · Serverless peak day ≈ ${slessPeakDayCuH.toFixed(2)} CU-h (smoothed over 24 h)`
+                    : "";
+                  return `${cp.estimated_cu.toFixed(1)} CU (${cp.headroom_pct}% headroom)${breakdown}${slessNote}`;
+                })()
+              : integrationDailyCu > 0 || sparkDailyCu > 0
+                ? `no monitoring data${
+                    integrationDailyCu > 0
+                      ? ` · ${integrationDailyCu.toFixed(2)} CU/day from pipelines`
+                      : ""
+                  }${
+                    sparkDailyCu > 0
+                      ? ` · ${sparkDailyCu.toFixed(2)} CU/day from Spark`
+                      : ""
+                  }`
                 : "no monitoring data"
           }
         />
       </div>
+      )}
 
       {rd?.top_blockers && rd.top_blockers.length > 0 && (
         <section className="section">
@@ -168,32 +274,35 @@ export default function Dashboard() {
         </section>
       )}
 
-      <StorageSection storage={storage} />
-      <PipelinesSection pipelines={pipelines} />
-      <ServerlessSection serverless={serverless} />
+      <StorageSection storage={storage} runMeta={runMeta} />
+      <PipelinesSection pipelines={pipelines} runMeta={runMeta} />
+      <SparkPoolsSection sparkPools={sparkPools} runMeta={runMeta} />
+      <ServerlessSection serverless={serverless} runMeta={runMeta} />
 
-      <section className="section">
-        <h2>Inputs analyzed</h2>
-        <table>
-          <thead>
-            <tr><th>Module</th><th>Source</th><th>Counts</th></tr>
-          </thead>
-          <tbody>
-            {fm.inputs.map((i: ModuleSummary) => (
-              <tr key={i.module}>
-                <td title={i.module}>{moduleLabel(i.module)}</td>
-                <td className="small muted">{i.source_file}</td>
-                <td className="small">
-                  {Object.entries(i.counts || {})
-                    .sort(([a], [b]) => a.localeCompare(b))
-                    .map(([k, v]) => `${k}=${v}`)
-                    .join(", ") || "—"}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </section>
+      {fm && (
+        <section className="section">
+          <h2>Inputs analyzed</h2>
+          <table>
+            <thead>
+              <tr><th>Module</th><th>Source</th><th>Counts</th></tr>
+            </thead>
+            <tbody>
+              {fm.inputs.map((i: ModuleSummary) => (
+                <tr key={i.module}>
+                  <td title={i.module}>{moduleLabel(i.module)}</td>
+                  <td className="small muted">{i.source_file}</td>
+                  <td className="small">
+                    {Object.entries(i.counts || {})
+                      .sort(([a], [b]) => a.localeCompare(b))
+                      .map(([k, v]) => `${k}=${v}`)
+                      .join(", ") || "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      )}
     </>
   );
 }
@@ -202,7 +311,7 @@ export default function Dashboard() {
 // Storage statistics
 // ---------------------------------------------------------------------------
 
-function StorageSection({ storage }: { storage: import("../types").StorageReport | null }) {
+function StorageSection({ storage, runMeta }: { storage: import("../types").StorageReport | null; runMeta?: import("../api/loader").RunMeta | null }) {
   if (!storage) return null;
   const pools = storage.dedicated_pool_storage ?? [];
   const accounts = storage.accounts ?? [];
@@ -219,7 +328,7 @@ function StorageSection({ storage }: { storage: import("../types").StorageReport
 
   return (
     <section className="section">
-      <h2>Storage</h2>
+      <h2>Storage<ProvenanceBadge meta={runMeta ?? null} module="storage" /></h2>
       <div className="grid cols-4">
         <StatCard
           label="Dedicated pool data"
@@ -283,7 +392,7 @@ function StorageSection({ storage }: { storage: import("../types").StorageReport
 // Pipeline activity (daily run rate, data movement)
 // ---------------------------------------------------------------------------
 
-function PipelinesSection({ pipelines }: { pipelines: import("../types").PipelinesReport | null }) {
+function PipelinesSection({ pipelines, runMeta }: { pipelines: import("../types").PipelinesReport | null; runMeta?: import("../api/loader").RunMeta | null }) {
   if (!pipelines) return null;
   const history = pipelines.run_history;
   if (!history || history.by_pipeline.length === 0) return null;
@@ -325,7 +434,7 @@ function PipelinesSection({ pipelines }: { pipelines: import("../types").Pipelin
 
   return (
     <section className="section">
-      <h2>Pipeline activity (last {window} days)</h2>
+      <h2>Pipeline activity (last {window} days)<ProvenanceBadge meta={runMeta ?? null} module="pipelines" /></h2>
       <div className="grid cols-5">
         <StatCard
           label="Daily pipeline runs"
@@ -407,10 +516,377 @@ function PipelinesSection({ pipelines }: { pipelines: import("../types").Pipelin
 }
 
 // ---------------------------------------------------------------------------
+// Spark Livy job history (interactive sessions + scheduled batches)
+// ---------------------------------------------------------------------------
+
+function SparkPoolsSection({ sparkPools, runMeta }: { sparkPools: import("../types").SparkPoolsReport | null; runMeta?: import("../api/loader").RunMeta | null }) {
+  if (!sparkPools) return null;
+  const stats = sparkPools.run_stats ?? [];
+  const pools = sparkPools.pools ?? [];
+  const errors = sparkPools.errors ?? [];
+  const sparkHistoryErrors = errors.filter((e) => e.includes("spark_history"));
+
+  // Render an explicit "no data" diagnostic panel when pools exist but the
+  // Livy history collection produced no rows. This is much better UX than
+  // silently dropping the section — it tells the user WHY there are no
+  // Spark execution stats (typically a 403 on bigDataPools/useCompute/action,
+  // or the SMA_SPARK_RUN_HISTORY env-var being disabled).
+  if (stats.length === 0) {
+    if (pools.length === 0) return null;
+    return (
+      <section className="section">
+        <h2>Spark execution</h2>
+        <div className="grid cols-2">
+          <StatCard
+            label="Spark pools discovered"
+            value={fmtNum(pools.length)}
+            sub={pools.slice(0, 3).map((p) => p.name).join(", ") + (pools.length > 3 ? `, …` : "")}
+          />
+          <StatCard
+            label="Spark Livy history"
+            value={sparkHistoryErrors.length > 0 ? "blocked" : "empty"}
+            sub={sparkHistoryErrors.length > 0
+              ? `${sparkHistoryErrors.length} Livy fetch error(s) — see below`
+              : "no batch jobs or sessions found in the configured window"}
+          />
+        </div>
+        {sparkHistoryErrors.length > 0 && (
+          <div
+            style={{
+              marginTop: 12,
+              padding: "10px 12px",
+              border: "1px solid rgba(210,153,34,.4)",
+              background: "rgba(210,153,34,.08)",
+              borderRadius: 6,
+              fontSize: 13,
+            }}
+          >
+            <strong>Spark Livy collection failed.</strong> The analyzer could
+            list pools but could not read job / session history. Most common
+            cause: the service principal lacks{" "}
+            <code>Microsoft.Synapse/workspaces/bigDataPools/useCompute/action</code>{" "}
+            (grant <em>Synapse Compute Operator</em> or higher on the
+            workspace). Run <code>sma doctor</code> to confirm.
+            <details style={{ marginTop: 8 }}>
+              <summary>Errors ({sparkHistoryErrors.length})</summary>
+              <ul style={{ marginTop: 6 }}>
+                {sparkHistoryErrors.map((e, i) => (
+                  <li key={i}><code>{e}</code></li>
+                ))}
+              </ul>
+            </details>
+          </div>
+        )}
+        {sparkHistoryErrors.length === 0 && (
+          <div className="small muted" style={{ marginTop: 8 }}>
+            Spark history collection runs by default. To disable, set{" "}
+            <code>SMA_SPARK_RUN_HISTORY=0</code>. To widen the window, set{" "}
+            <code>SMA_SPARK_RUN_DAYS</code> (default 90).
+          </div>
+        )}
+      </section>
+    );
+  }
+
+  // Prefer the 7-day window; fall back to the shortest available.
+  // Aggregate per-pool. The interactive-vs-scheduled trigger dimension
+  // is not displayed: Synapse Studio's Livy telemetry doesn't expose a
+  // 100%-reliable discriminator for all run types (the `spark.synapse
+  // .context.*` conf keys cover pipeline/SJD-triggered notebook runs
+  // but other scheduled paths can still slip through), so we'd rather
+  // omit the split than show a number that doesn't match Studio.
+  //
+  // Success/failure counts are intentionally omitted from the Spark
+  // panel: most Spark runs in Synapse are interactive notebook sessions
+  // where "failed" includes user-cancelled cells / SIGTERM-on-idle, so
+  // the rate is a noisy signal that doesn't help capacity planning.
+  type PerPool = {
+    pool: string;
+    runs: number;
+    durationHours: number;
+    vcoreHours: number;
+    cuHours: number;
+    windowDays: number;
+  };
+  const perPool: PerPool[] = (() => {
+    const byPool = new Map<string, PerPool>();
+    for (const s of stats) {
+      const w = s.windows.find((x) => x.window_days === 7) ?? s.windows[0];
+      if (!w) continue;
+      let row = byPool.get(s.pool);
+      if (!row) {
+        row = {
+          pool: s.pool, runs: 0,
+          durationHours: 0, vcoreHours: 0, cuHours: 0,
+          windowDays: w.window_days,
+        };
+        byPool.set(s.pool, row);
+      }
+      row.runs += w.run_count;
+      row.durationHours += w.total_duration_hours;
+      row.vcoreHours += w.total_vcore_hours;
+      row.cuHours += w.est_cu_hours_fabric_spark;
+    }
+    return Array.from(byPool.values());
+  })();
+  if (perPool.length === 0) return null;
+
+  const window = perPool[0].windowDays;
+  const totalRuns = perPool.reduce((s, r) => s + r.runs, 0);
+  const totalDurationHours = perPool.reduce((s, r) => s + r.durationHours, 0);
+  const totalVcoreHours = perPool.reduce((s, r) => s + r.vcoreHours, 0);
+  const totalCuHours = perPool.reduce((s, r) => s + r.cuHours, 0);
+  const dailyCuHours = window > 0 ? totalCuHours / window : 0;
+  const dailyCuEquivalent = dailyCuHours / 24;
+
+  // Sort by CU-hours desc (largest consumer first).
+  const top = [...perPool].sort((a, b) => b.cuHours - a.cuHours);
+
+  return (
+    <section className="section">
+      <h2>Spark execution (last {window} days)<ProvenanceBadge meta={runMeta ?? null} module="spark_pools" /></h2>
+      <div className="grid cols-3">
+        <StatCard
+          label="Spark runs"
+          value={fmtNum(totalRuns)}
+          sub={`${perPool.length} pool${perPool.length === 1 ? "" : "s"} · ${(window > 0 ? totalRuns / window : 0).toFixed(1)} runs/day`}
+        />
+        <StatCard
+          label="Spark compute"
+          value={`${totalVcoreHours.toFixed(2)} vCore-hr`}
+          sub={`${totalDurationHours.toFixed(2)} wall-clock hr · ${(window > 0 ? totalVcoreHours / window : 0).toFixed(2)} vCore-hr/day`}
+        />
+        <StatCard
+          label="Est. Fabric capacity"
+          value={totalCuHours > 0 ? `${totalCuHours.toFixed(2)} CU-hr` : "—"}
+          sub={totalCuHours > 0
+            ? `≈ ${dailyCuEquivalent.toFixed(2)} CU sustained (1 CU = 2 Spark vCores)`
+            : "no Spark Livy history collected"}
+        />
+      </div>
+
+      <table style={{ marginTop: 12 }}>
+        <thead>
+          <tr>
+            <th>Pool</th>
+            <th className="num">Runs</th>
+            <th className="num">Duration hr</th>
+            <th className="num">vCore-hr</th>
+            <th className="num">CU-hr (Spark)</th>
+            <th className="num">Avg vCore-hr / run</th>
+          </tr>
+        </thead>
+        <tbody>
+          {top.map((r) => {
+            const avgVcore = r.runs > 0 ? r.vcoreHours / r.runs : null;
+            return (
+              <tr key={r.pool}>
+                <td><code>{r.pool}</code></td>
+                <td className="num">{fmtNum(r.runs)}</td>
+                <td className="num">{r.durationHours.toFixed(2)}</td>
+                <td className="num">{r.vcoreHours.toFixed(2)}</td>
+                <td className="num">{r.cuHours.toFixed(2)}</td>
+                <td className="num">{avgVcore != null ? avgVcore.toFixed(2) : "—"}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      {sparkPools.spark_runs && sparkPools.spark_runs.length > 0 && (
+        <SparkDailyBars runs={sparkPools.spark_runs} windowDays={28} />
+      )}
+      {sparkPools.errors && sparkPools.errors.length > 0 && (
+        <div className="small muted" style={{ marginTop: 6 }}>
+          {sparkPools.errors.length} collection error(s) — see <code>spark_pools.json</code>.
+        </div>
+      )}
+    </section>
+  );
+}
+
+function SparkDailyBars({
+  runs,
+  windowDays = 28,
+}: {
+  runs: import("../types").SparkRunRecord[];
+  windowDays?: number;
+}) {
+  // Per-pool stacked daily vCore-hours. Each day is a single stacked bar
+  // with one segment per Spark pool — this is what users want to see for
+  // capacity sizing (which pool is driving compute, on which day?).
+  //
+  // Day bucketing uses UTC-midnight boundaries so the window is exactly
+  // ``windowDays`` bins ending **today (UTC) inclusive**. Previously the
+  // loop produced bins ``[now-28d, now-1d]`` (28 entries starting at the
+  // millisecond ``now - 28d``) and today's runs silently dropped because
+  // the lookup key (UTC date of today) did not exist in the bin map.
+  const todayUTC = new Date();
+  todayUTC.setUTCHours(0, 0, 0, 0);
+  const startDayUTC = new Date(
+    todayUTC.getTime() - (windowDays - 1) * 24 * 60 * 60 * 1000,
+  );
+  // Runs are kept when their submitted_at falls on or after the start day
+  // (midnight UTC); this avoids losing a partial first day vs. using
+  // ``now - 28d`` which slides every second.
+  const cutoff = startDayUTC;
+
+  // Per-run CU contribution: prefer the directly measured vCore-hours,
+  // fall back to ``est_cu_hours_fabric_spark / 0.5`` (=> vCore-hours
+  // equivalent) for interactive sessions where Livy returns CU-hours
+  // but no raw vCore-seconds.
+  const vCoreOf = (r: import("../types").SparkRunRecord): number => {
+    if (typeof r.vcore_hours === "number" && r.vcore_hours > 0) return r.vcore_hours;
+    if (typeof r.est_cu_hours_fabric_spark === "number" && r.est_cu_hours_fabric_spark > 0) {
+      return r.est_cu_hours_fabric_spark / 0.5;
+    }
+    return 0;
+  };
+
+  // Discover the set of pools that contributed any runs in the window.
+  // Include pools even when their per-run vCore-hours are 0 so the
+  // legend reflects all observed pools (a Spark pool with only
+  // failed-immediately runs still belongs on the chart).
+  const pools = (() => {
+    const seen = new Set<string>();
+    for (const r of runs) {
+      if (!r.submitted_at) continue;
+      const t = new Date(r.submitted_at);
+      if (Number.isNaN(t.getTime()) || t < cutoff) continue;
+      seen.add(r.pool);
+    }
+    return Array.from(seen).sort();
+  })();
+  if (pools.length === 0) return null;
+
+  // Pre-seed every day so the x-axis is continuous, **including today**.
+  type DayBin = { day: string; perPool: Record<string, number>; total: number };
+  const bins = new Map<string, DayBin>();
+  for (let i = 0; i < windowDays; i++) {
+    const d = new Date(startDayUTC.getTime() + i * 24 * 60 * 60 * 1000);
+    const key = d.toISOString().slice(0, 10);
+    const perPool: Record<string, number> = {};
+    for (const p of pools) perPool[p] = 0;
+    bins.set(key, { day: key, perPool, total: 0 });
+  }
+
+  for (const r of runs) {
+    if (!r.submitted_at) continue;
+    const t = new Date(r.submitted_at);
+    if (Number.isNaN(t.getTime()) || t < cutoff) continue;
+    const key = t.toISOString().slice(0, 10);
+    const bin = bins.get(key);
+    if (!bin) continue;
+    const v = vCoreOf(r);
+    bin.perPool[r.pool] = (bin.perPool[r.pool] ?? 0) + v;
+    bin.total += v;
+  }
+
+  const days = Array.from(bins.values()).sort((a, b) => (a.day < b.day ? -1 : 1));
+  const maxV = Math.max(0.001, ...days.map((d) => d.total));
+  const total = days.reduce((s, d) => s + d.total, 0);
+  if (total <= 0) return null;
+
+  // Stable per-pool color (deterministic by index so refreshes don't shuffle).
+  const PALETTE = ["#2f81f7", "#3fb950", "#d29922", "#a371f7", "#db61a2", "#e36b6b", "#1f9ea3", "#bf6a02"];
+  const colorFor = (pool: string) => PALETTE[pools.indexOf(pool) % PALETTE.length];
+
+  const width = 720;
+  const height = 240;
+  const padX = 56;
+  const padTop = 16;
+  const padBottom = 44;
+  const innerH = height - padTop - padBottom;
+  const groupW = (width - padX * 2) / days.length;
+  const barW = Math.max(4, Math.min(24, groupW - 2));
+
+  return (
+    <div style={{ marginTop: 16, overflowX: "auto" }}>
+      <div className="small muted" style={{ marginBottom: 6 }}>
+        {pools.map((p) => (
+          <span key={p} style={{ marginRight: 12, display: "inline-block" }}>
+            <span style={{ display: "inline-block", width: 10, height: 10, background: colorFor(p), marginRight: 4, verticalAlign: "middle" }} />
+            <code>{p}</code>
+          </span>
+        ))}
+        <span>Spark vCore-hr per day</span>
+      </div>
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        width="100%"
+        style={{ maxWidth: width, fontSize: 10 }}
+        role="img"
+        aria-label={`Spark vCore-hours per day per pool for the last ${windowDays} days`}
+      >
+        <line x1={padX} x2={width - padX} y1={height - padBottom} y2={height - padBottom} stroke="currentColor" opacity={0.3} />
+        <line x1={padX} x2={padX} y1={padTop} y2={height - padBottom} stroke="currentColor" opacity={0.3} />
+        {[0, 0.5, 1].map((t, i) => (
+          <g key={i}>
+            <text x={padX - 6} y={height - padBottom - innerH * t + 3} textAnchor="end" fill="currentColor" opacity={0.7}>
+              {(maxV * t).toFixed(maxV >= 10 ? 0 : 1)}
+            </text>
+            <line
+              x1={padX}
+              x2={width - padX}
+              y1={height - padBottom - innerH * t}
+              y2={height - padBottom - innerH * t}
+              stroke="currentColor"
+              opacity={i === 0 ? 0.3 : 0.08}
+            />
+          </g>
+        ))}
+        {days.map((d, i) => {
+          const cx = padX + groupW * i + groupW / 2;
+          const baseY = height - padBottom;
+          const labelEvery = Math.max(1, Math.ceil(days.length / 8));
+          let acc = 0;
+          return (
+            <g key={d.day}>
+              {pools.map((p) => {
+                const v = d.perPool[p] ?? 0;
+                if (v <= 0) return null;
+                const h = (v / maxV) * innerH;
+                const y = baseY - acc - h;
+                acc += h;
+                return (
+                  <rect
+                    key={p}
+                    x={cx - barW / 2}
+                    y={y}
+                    width={barW}
+                    height={h}
+                    fill={colorFor(p)}
+                  >
+                    <title>{`${d.day} — ${p}: ${v.toFixed(2)} vCore-hr`}</title>
+                  </rect>
+                );
+              })}
+              {i % labelEvery === 0 && (
+                <text x={cx} y={height - padBottom + 14} textAnchor="middle" fill="currentColor" opacity={0.8}>
+                  {d.day.slice(5)}
+                </text>
+              )}
+            </g>
+          );
+        })}
+      </svg>
+      <div className="small muted" style={{ marginTop: 4 }}>
+        Window: last {windowDays} days · {total.toFixed(2)} vCore-hr total ·{" "}
+        {pools
+          .map((p) => {
+            const s = days.reduce((acc, d) => acc + (d.perPool[p] ?? 0), 0);
+            return `${p}: ${s.toFixed(2)}`;
+          })
+          .join(" · ")}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Serverless SQL query statistics
 // ---------------------------------------------------------------------------
 
-function ServerlessSection({ serverless }: { serverless: import("../types").ServerlessReport | null }) {
+function ServerlessSection({ serverless, runMeta }: { serverless: import("../types").ServerlessReport | null; runMeta?: import("../api/loader").RunMeta | null }) {
   if (!serverless) return null;
   const daily = serverless.daily_usage ?? [];
   const dbCount = serverless.databases?.length ?? 0;
@@ -424,9 +900,20 @@ function ServerlessSection({ serverless }: { serverless: import("../types").Serv
 
   const totalRequests = sorted.reduce((s, d) => s + (d.request_count ?? 0), 0);
   const totalDataMb = sorted.reduce((s, d) => s + (d.data_processed_mb ?? 0), 0);
+  const totalDurationSeconds = sorted.reduce((s, d) => s + (d.duration_seconds ?? 0), 0);
   const windowDays = sorted.length;
   const avgDailyRequests = windowDays > 0 ? totalRequests / windowDays : 0;
   const avgQueryMb = totalRequests > 0 ? totalDataMb / totalRequests : 0;
+  const avgQuerySeconds = totalRequests > 0 ? totalDurationSeconds / totalRequests : 0;
+  const hasDuration = totalDurationSeconds > 0;
+
+  const fmtDurationShort = (seconds: number): string => {
+    if (!Number.isFinite(seconds) || seconds <= 0) return "0 s";
+    if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)} s`;
+    if (seconds < 3600) return `${(seconds / 60).toFixed(1)} min`;
+    if (seconds < 86400) return `${(seconds / 3600).toFixed(1)} h`;
+    return `${(seconds / 86400).toFixed(1)} d`;
+  };
 
   if (daily.length === 0) {
     return (
@@ -453,8 +940,8 @@ function ServerlessSection({ serverless }: { serverless: import("../types").Serv
 
   return (
     <section className="section">
-      <h2>Serverless SQL ({windowDays} days observed)</h2>
-      <div className="grid cols-4">
+      <h2>Serverless SQL ({windowDays} days observed)<ProvenanceBadge meta={runMeta ?? null} module="serverless_pools" /></h2>
+      <div className={hasDuration ? "grid cols-5" : "grid cols-4"}>
         <StatCard
           label="Avg daily queries"
           value={avgDailyRequests.toFixed(1)}
@@ -470,6 +957,13 @@ function ServerlessSection({ serverless }: { serverless: import("../types").Serv
           value={fmtMb(avgQueryMb)}
           sub="data scanned per query"
         />
+        {hasDuration && (
+          <StatCard
+            label="Total execution time"
+            value={fmtDurationShort(totalDurationSeconds)}
+            sub={`${fmtDurationShort(totalDurationSeconds / Math.max(1, windowDays))} / day avg · ${fmtDurationShort(avgQuerySeconds)} / query avg`}
+          />
+        )}
         <StatCard
           label="Estimated cost"
           value={

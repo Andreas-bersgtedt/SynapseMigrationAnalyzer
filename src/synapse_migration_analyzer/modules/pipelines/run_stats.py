@@ -191,6 +191,11 @@ class _RunBucket:
     # (so the aggregator can apply the static-count fallback for them).
     observed_non_copy: int = 0
     unsampled_runs: int = 0
+    # v2.6.3 — per-UTC-day total CU-hours (DIU + MDF vCore + orchestration)
+    # for runs that ended on that day. ``max(values())`` feeds
+    # ``PipelineRunWindowStats.peak_day_cu_hours`` so the SKU sizer can
+    # cover the busiest day instead of the window average.
+    daily_cu_hours: dict = field(default_factory=dict)
 
 
 def _coerce_datetime(value: Any) -> datetime | None:
@@ -538,6 +543,23 @@ def aggregate_runs(
                 bucket.observed_non_copy += non_copy_for_run
             else:
                 bucket.unsampled_runs += 1
+            # v2.6.3 \u2014 per-day CU contribution from this run. For sampled
+            # runs we have exact non-copy counts; for unsampled runs we
+            # use the static fallback (matches the window-level totals).
+            run_cu = (
+                (diu_for_run or 0.0) * DIU_TO_CU_HOURS
+                + (vcore_for_run or 0.0) * VCORE_HOURS_TO_CU_HOURS
+            )
+            if sampled and non_copy_for_run is not None:
+                run_cu += non_copy_for_run * ORCHESTRATION_CU_HOURS_PER_ACTIVITY
+            else:
+                run_cu += (
+                    max(0, int(non_copy_activity_counts.get(pname, 0)))
+                    * ORCHESTRATION_CU_HOURS_PER_ACTIVITY
+                )
+            if run_cu > 0:
+                day = end_dt.astimezone(timezone.utc).date()
+                bucket.daily_cu_hours[day] = bucket.daily_cu_hours.get(day, 0.0) + run_cu
 
     # Materialize results, including zero rows for pipelines with no runs.
     out: list[PipelineRunStats] = []
@@ -622,6 +644,10 @@ def aggregate_runs(
                 est_cu_hours_from_vcore=est_cu_hours_from_vcore,
                 est_non_copy_activity_runs=est_orch_runs,
                 est_cu_hours_from_orchestration=est_orch_cu_hours,
+                peak_day_cu_hours=(
+                    max(b.daily_cu_hours.values()) if b.daily_cu_hours
+                    else (0.0 if b.count == 0 else None)
+                ),
             ))
 
         last = last_run.get(pname)

@@ -6,6 +6,396 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.6.5] - 2026-05-12
+
+### Changed
+- **Removed success / failure dimensions from the Spark execution
+  panel** on the Dashboard. Most Synapse Spark runs are interactive
+  notebook sessions where "failed" includes user-cancelled cells and
+  SIGTERM-on-idle, so the success rate was a noisy signal that didn't
+  help capacity planning. The panel now shows Spark runs, compute, and
+  estimated Fabric CU only — with the per-pool table showing runs,
+  duration, vCore-hr, CU-hr, and avg vCore-hr/run.
+
+## [2.6.4] - 2026-05-12
+
+### Fixed
+- **Spark daily bar chart on the Dashboard dropped today's runs and any
+  interactive-session pool that only had non-zero CU-hours**. Two bugs:
+  1. The day bins were pre-seeded for ``[now - 28d, now - 1d]`` because
+     the loop used ``start + i * day`` for ``i in [0, 28)``. UTC date of
+     ``now`` (today) had no entry so today's runs silently dropped.
+     The window now bins exactly ``windowDays`` UTC days **ending today
+     inclusive**.
+  2. Interactive Livy sessions report ``est_cu_hours_fabric_spark``
+     directly but often have ``vcore_hours = null``; those runs
+     rendered as zero-height segments and looked like the pool had no
+     activity. The chart now falls back to
+     ``est_cu_hours_fabric_spark / 0.5`` when ``vcore_hours`` is
+     missing so interactive pools surface alongside scheduled pools.
+
+## [2.6.3] - 2026-05-12
+
+### Changed
+- **Recommended Fabric SKU now sizes for the busiest day, not the
+  weekly average.** Fabric capacity smooths CU-second consumption over
+  a rolling 24-hour burndown window, so a one-day burst that exceeds
+  `F-SKU × 24` CU-hours will throttle even when the weekly average is
+  comfortable. The Spark + Pipelines contribution to the SKU
+  recommendation is now derived from the worst single UTC day inside
+  the observation window divided by 24h, not the window total divided
+  by `window_days × 24`. Previously a workspace that ran 1680 Spark
+  CU-hours all on Tuesday looked like ~10 CU sustained (avg over a
+  week); it now correctly sizes for the actual 70 CU peak day.
+- DW DWU contribution is unchanged — monitoring metrics already give
+  per-timestamp peaks.
+
+### Added
+- New per-window field `peak_day_cu_hours` on
+  `SparkRunWindowStats` and `PipelineRunWindowStats`. Computed at
+  collection time from the actual run timestamps (UTC date of
+  submission for Spark, UTC date of `run_end` for pipelines). Older
+  artefacts without this field fall back to a conservative
+  "avg×2" peak-day estimate so historical runs still produce a
+  sensible projection.
+- 1 new test (`test_legacy_payload_without_peak_day_falls_back`).
+
+## [2.6.2] - 2026-05-12
+
+### Changed
+- **Recommended Fabric SKU now factors in Spark and Pipelines CU-hours**
+  in addition to peak DWU. The capacity projection adds a sustained-CU
+  contribution for Spark Livy (`est_cu_hours_fabric_spark`) and for
+  Pipelines (DIU + Mapping-Data-Flow vCore + orchestration), normalises
+  each over its observation window (default 7 days), applies the same
+  headroom multiplier to the combined total, and sizes the smallest
+  covering F-SKU. Previously DW DWU was the only signal and the
+  recommended SKU could be undersized for Spark-heavy workspaces.
+- A capacity projection is now produced even when no DW monitoring
+  data is available, as long as Spark and/or Pipelines have history.
+
+### Added
+- `CapacityProjection` exposes per-component breakdown:
+  `dwu_cu_contribution`, `spark_cu_contribution`,
+  `pipelines_cu_contribution` (post-headroom CU). The Dashboard and
+  printable report render these as `… CU (h%) · DW X + Spark Y + Pipelines Z CU`.
+- 3 new tests in `tests/test_cu_projection.py` covering Spark-only,
+  combined DW+Spark+Pipelines, and the all-zero short-circuit.
+
+## [2.6.1] - 2026-05-12
+
+### Added
+- **Carry-forward provenance in the SPA.** The Dashboard's Storage,
+  Pipeline, Spark, and Serverless section headers now show a small
+  `↺ carried · <relative-age>` pill whenever the underlying module
+  artefact was inherited from a prior run (rather than produced by the
+  currently-selected run). Hovering the pill reveals the source run id
+  and the original generation timestamp.
+- New top-of-Dashboard banner summarising which modules were
+  refreshed in the current run vs. carried forward. Silent on a
+  clean full run so it never adds noise.
+- The `Runs` page now flags incremental runs with an `↺ incremental`
+  pill next to the run id, with a tooltip listing the carried modules.
+- New reusable `Provenance` component (`useCurrentRunMeta`,
+  `moduleProvenance`, `ProvenanceBadge`) so future module pages can
+  surface the same provenance signal with one line of JSX.
+
+### Tests
+- `web/src/__tests__/provenance.test.ts` covers the helper for all
+  four cases (no meta, executed-in-run, unknown module, carried).
+
+## [2.6.0] - 2026-05-12
+
+### Added
+- **Incremental runs (control-plane).** When a run only selects a
+  subset of modules, the runner now copies every other module's
+  artefacts forward from the most recent completed run with the same
+  workspace identity (`tenant_id` / `subscription_id` /
+  `resource_group` / `workspace_name`). This lets users refresh one
+  module at a time without losing the rest of the workspace view.
+  Carried artefacts retain their original mtime via `shutil.copy2`,
+  and the carry chain collapses to the original producer (so run C
+  inheriting from run B that inherited from run A correctly records
+  A as the source).
+- New `ModuleState` value `"carried"` and new `RunMeta.carried_from`
+  mapping (`module -> source_run_id`) plus per-`ModuleStatus`
+  `carried_from_run_id` / `carried_from_started_at` fields capture
+  provenance for downstream UI. Backwards-compatible: existing run
+  records deserialise unchanged (new fields default to empty).
+- `FilesystemRunRepo.latest_for_workspace(...)` to look up the most
+  recent terminal run for a workspace identity, with `exclude_id`
+  so a run never carries from itself.
+- New `modules_carried` SSE event so the live UI can react when
+  carry-forward happened.
+
+### Tests
+- `tests/web/test_carry_forward.py` covers: cross-run carry-forward,
+  workspace isolation, no-carry when the module is being refreshed,
+  ignoring non-terminal (running/cancelled) prior runs, and the
+  carry-chain collapse-to-source rule.
+
+## [2.5.12] - 2026-05-12
+
+### Changed
+- **Removed the interactive vs scheduled dimension from the Spark
+  execution UI.** Livy telemetry does not expose a 100%-reliable
+  discriminator across all Synapse run types, and showing a split
+  that doesn't match Synapse Studio is worse than showing no split.
+  The Spark execution StatCards, per-pool table, and daily stacked
+  bar chart now display per-pool totals only. The underlying
+  classification is still computed and persisted in
+  `spark_pools.json` (so downstream tooling that can verify the
+  signal still has access), but the Dashboard no longer surfaces it.
+
+## [2.5.11] - 2026-05-12
+
+### Changed
+- **Spark execution section is now per-pool.** The table previously
+  produced one row per (pool, kind) which made it hard to read at a
+  glance (you saw `sparkpool001 / scheduled` and `sparkpool001 /
+  interactive` as two separate rows). It now collapses to one row per
+  pool with an `Interactive` column showing the count *and* share of
+  all runs on that pool (e.g. `2 (3.8%)`), plus a per-pool success-rate
+  pill. Per-pool totals also include runs across both trigger kinds.
+- **Spark daily bar chart now shows per-pool vCore-hr only.** The
+  chart was previously a clustered bar chart with both vCore-hr and
+  the derived Fabric CU-hr (= vCore-hr × 0.5) side-by-side, which was
+  redundant. It is now a stacked bar chart with one segment per Spark
+  pool per day, deterministic per-pool colors, and a per-pool legend
+  + window-total footer. Hovering a segment shows `<day> — <pool>:
+  <vCore-hr>`.
+
+## [2.5.10] - 2026-05-12
+
+### Fixed
+- **Pipeline vs. interactive notebook classification now uses the
+  authoritative Synapse signal.** v2.5.7 introduced a name-pattern
+  regex (`<name>_<pool>_<unix-ts>`) to detect pipeline-triggered
+  sessions, but Synapse Studio uses the *same* auto-name pattern for
+  user-attached interactive notebooks, producing false positives
+  (e.g. an ad-hoc session on the `InteractiveLab` pool was bucketed
+  as scheduled).
+
+  The classifier now keys off the Spark conf instead. Synapse's
+  pipeline framework and Spark Job Definition runtime inject these
+  keys into `livyInfo.jobCreationRequest.conf`:
+  - `spark.synapse.context.pipelinejobid`
+  - `spark.synapse.context.activityrunid`
+  - `spark.synapse.context.activityname`
+  - `spark.synapse.nbs.runid`
+
+  None of these are present on user-attached Studio notebook sessions,
+  so a non-empty value for any of them is treated as the definitive
+  scheduled marker. Tags remain as a defensive secondary signal.
+
+### Added
+- `SparkRunRecord.pipeline_job_id`, `activity_run_id`, `activity_name`,
+  `notebook_name`, `notebook_run_id` — the Synapse-injected
+  correlation IDs are now surfaced on every record (when present) so
+  downstream tooling can join Spark Livy runs to the parent pipeline /
+  activity run without re-querying the Synapse REST API.
+
+## [2.5.9] - 2026-05-12
+
+### Fixed
+- **Dashboard now renders available sections for partial runs.** Running a
+  single module (e.g. only `analyze-spark-pools`) no longer produces a hard
+  error — the Dashboard used to bail out with *"No fabric_mapping.json for
+  run …"* whenever the fabric_mapping module hadn't been selected. The page
+  now checks for output from any module (fabric_mapping, storage, pipelines,
+  spark_pools, serverless) and renders the corresponding sections; only the
+  global header/readiness/StatCards/Inputs panel — which all depend on
+  fabric_mapping — are hidden in partial-run mode, with a one-line banner
+  explaining the partial state. The empty-state message is reserved for the
+  case where *no* module produced any output.
+
+## [2.5.8] - 2026-05-12
+
+### Fixed
+- **Pipeline-triggered Spark notebook runs no longer report as failed.**
+  v2.5.6–2.5.7 used divergent failure semantics per Livy endpoint and
+  treated `result="Cancelled"` as a failure unconditionally. Synapse
+  pipelines and Spark Job Definitions routinely reap the underlying
+  Livy session/batch as `state=dead`/`killed` + `result=Cancelled`
+  **after** the notebook code returned successfully — Synapse Studio
+  shows these as Succeeded, but the analyzer was reporting them as
+  failed (e.g. 51 scheduled runs → 0 ok / 51 failed despite the parent
+  pipelines all succeeding).
+
+  Outcome classification is now unified and aligned with the Studio
+  Monitor view for both batches and sessions:
+  - `result=Succeeded` or `state=success` → succeeded.
+  - `result=Failed` / `result=FailedTimeout` or `state=error` → failed.
+  - `result=Cancelled` while still in a non-terminal state → failed
+    (genuine user/admin cancel mid-run).
+  - Any other terminal cleanup state (`dead` / `killed` /
+    `shutting_down` / `stopped`) — including `result=Cancelled`
+    paired with one of those, which is the platform's post-success
+    teardown signature — → succeeded.
+
+### Added
+- Diagnostic INFO log per (pool, Livy endpoint) emits a top-10
+  histogram of observed `state`/`result`/`trigger`→`outcome` tuples
+  immediately after a collection pass, making it easy to compare the
+  analyzer's classification against Synapse Studio when investigating
+  edge cases.
+
+## [2.5.7] - 2026-05-12
+
+### Fixed
+- **Pipeline-triggered notebook executions now correctly bucket under
+  *scheduled* instead of *interactive*.** Synapse pipelines and Spark
+  Job Definitions launch notebook runs through the Livy *session*
+  endpoint (Synapse Studio shows Type = "Spark session") rather than the
+  Livy *batch* endpoint, so v2.5.0–2.5.6 was tagging them as
+  interactive ad-hoc runs. The classifier is now decoupled from the
+  Livy endpoint:
+  - Livy *batch* records remain *scheduled*.
+  - Livy *session* records are classified per-record: *scheduled* if
+    the session has an auto-generated `<source>_<pool>_<unix-ts>` name
+    or carries pipeline / trigger / scheduler tags (e.g.
+    `JobType=SparkNotebook`); *interactive* otherwise (user-attached
+    notebook in Studio).
+  Failure semantics still follow the Livy endpoint (batch → strict;
+  session → explicit failure result only), so stopped pipeline
+  notebooks continue to count as successful runs.
+
+## [2.5.6] - 2026-05-12
+
+### Fixed
+- **Stopped notebook sessions no longer counted as Spark failures.** The
+  Synapse Studio UI shows interactive notebook sessions that shut down
+  cleanly as *Stopped*. Livy reports those with `state=dead` /
+  `shutting_down` / `stopped` / `killed` and `result=Uncertain`, which
+  v2.5.x was classifying as failed. The classifier now distinguishes
+  session kind: for interactive sessions, only an explicit failure
+  `result` (`Failed`, `Cancelled`, `FailedTimeout`) counts as a failure;
+  any terminal state without an explicit failure is a successful run.
+  Batch jobs keep the previous strict semantics.
+- **Stopped sessions are no longer dropped from the time-window rollup.**
+  When a session has shut down, the Livy SDK sometimes omits the
+  `scheduler` block, leaving `submitted_at = None`. The aggregator
+  excludes such records from every window, so the Dashboard showed fewer
+  runs than Synapse Studio. `_normalize` now falls back to
+  `plugin.preparation_started_at` / `plugin.submission_started_at` /
+  `livy_info.created_at` / top-level `created_at` for the submission
+  timestamp, and to `plugin.cleanup_started_at` /
+  `plugin.monitoring_started_at` / `livy_info.deleted_at` for the end
+  timestamp.
+
+### Added
+- Spark Livy pagination now logs `scanned`, `yielded`, and the server's
+  reported `total` per (pool, kind), and emits a warning when fewer runs
+  were scanned than the server reports — a quick way to spot a stale
+  `SMA_SPARK_RUN_LIMIT` or pagination regression.
+
+## [2.5.5] - 2026-05-12
+
+### Added
+- **Spark vCore-hr / CU-hr daily bar chart on the Dashboard.** The
+  *Spark execution* section now renders a clustered bar chart binning
+  `spark_runs[].submitted_at` by UTC day across the last 28 days,
+  plotting blue *vCore-hours per day* alongside orange *Fabric CU-hours*
+  (=vCore × 0.5). Days with no activity are pre-seeded so the x-axis is
+  continuous; bars carry SVG `<title>` tooltips with the exact daily
+  totals, and a footer shows the window total in both units.
+
+## [2.5.4] - 2026-05-11
+
+### Fixed
+- **Spark Livy history calls now respect the server-side page-size cap.**
+  The Synapse Livy endpoint hard-caps `size` at 20 per page and rejects
+  larger requests with HTTP 400 *"Size cannot be more than 20"*. v2.5.0
+  shipped with `_MAX_PAGE_SIZE = 200` and an `SMA_SPARK_RUN_PAGE_SIZE`
+  default of 100, which caused every workspace to hit the 400 and yield
+  zero runs (the `errors=2` symptom on the Dashboard). Both the constant
+  and the env-var default are now `20`; the analyzer's existing
+  `min(page_size, _MAX_PAGE_SIZE)` clamp prevents user overrides from
+  re-introducing the issue.
+
+## [2.5.3] - 2026-05-11
+
+### Fixed
+- **Spark execution section now renders a diagnostic panel when Livy
+  history collection fails.** Previously, if the analyzer could list
+  Spark pools but the per-pool batch / session calls returned 403
+  (`bigDataPools/useCompute/action` not granted) or otherwise produced
+  zero runs, the Dashboard silently dropped the entire Spark section,
+  making it look as if v2.5.2's wiring was broken. The Dashboard now
+  shows pools discovered, the Livy collection status (*blocked* vs.
+  *empty*), and the verbatim error strings from `spark_pools.json`
+  with a direct pointer to the *Synapse Compute Operator* RBAC
+  requirement.
+
+## [2.5.2] - 2026-05-11
+
+### Fixed
+- **Spark Livy run statistics now appear in the SPA Dashboard.** v2.5.0
+  added the analyzer module (`spark_pools.json` with `spark_runs` and per
+  pool / per kind `run_stats`) but the React SPA never loaded the file or
+  rendered the data, so users saw their Synapse Spark numbers nowhere in
+  the UI. The Dashboard now surfaces a *Spark execution (last 7 days)*
+  section with totals for runs, success rate, vCore-hours, and estimated
+  Fabric CU-hours (using the documented 1 CU = 2 Spark vCores rate, i.e.
+  `est_cu_hours_fabric_spark = vcore_hours * 0.5`), plus a per-pool /
+  per-kind breakdown table.
+
+### Added
+- New SPA types: `SparkPoolsReport`, `SparkPoolRunStats`,
+  `SparkRunWindowStats`, `SparkRunRecord` (mirroring the pydantic models
+  emitted by `SparkAnalysis.to_dict()`), and a `loadSparkPools()` JSON
+  loader.
+- The Dashboard's *Recommended SKU* stat-card sub-text now also includes
+  Spark's contribution to the daily-CU rollup (e.g. *"+ 0.42 CU/day from
+  Spark"*), alongside the existing pipeline integration contribution.
+
+## [2.5.1] - 2026-05-11
+
+### Added
+- **Doctor + live-validation now probe Spark Livy permissions.** Both
+  `sma doctor` and the SPA's *Validate access (live)* card now issue a
+  tiny `get_spark_batch_jobs(size=1)` against the first available Spark
+  pool to confirm the SP has the action
+  `Microsoft.Synapse/workspaces/bigDataPools/useCompute/action`. A 403
+  here surfaces as `Spark Livy (Synapse Compute Operator)` FAIL with the
+  verbatim error — telling the operator exactly which Synapse RBAC role
+  to grant. Skipped (with a `warn`) when the workspace has no Spark pools.
+  `azure.synapse.spark` is also added to the doctor package-import
+  manifest.
+- **Permissions docs + error-hint coverage for Spark Livy.** QUICKSTART
+  and the Configuration user-guide page now call out the **Synapse
+  Compute Operator** role explicitly (with the exact RBAC action) as a
+  requirement for the spark_pools module's Livy job-history collection,
+  and clarify that Synapse Artifact User is NOT sufficient. The
+  `format_error` helper now emits a Spark-specific hint when it sees
+  `bigDataPools/useCompute` in an `Unauthorized` exception.
+
+### Fixed
+- `format_error` no longer over-attaches the Artifact-User hint to Spark
+  Livy 403s. The artifacts hint now requires the specific
+  `artifacts/read` action substring rather than the generic phrase
+  "Synapse RBAC" (which appears in both error families).
+
+## [2.5.0] - 2026-05-11
+
+### Added
+- **Spark execution module — Livy job history with Fabric CU projection.**
+  The `spark_pools` analyzer now pulls Synapse Spark Livy history per pool
+  (interactive notebook **sessions** and scheduled / pipeline-triggered
+  **batch jobs**) and rolls it up per pool × kind × window
+  (7 / 14 / 28 / 90 days). For each run the analyzer extracts the cluster
+  shape from `app_info` (driver vCores + executor vCores × #executors),
+  multiplies by wall-clock seconds to get **vCore-seconds**, divides by
+  3600 for vCore-hours, and converts to Fabric CU-hours using the
+  documented rate **1 CU = 2 Spark vCores ⇒ 1 vCore-second = 0.5
+  CU-second**. New env vars: `SMA_SPARK_RUN_HISTORY` (default `1`),
+  `SMA_SPARK_RUN_DAYS` (default `90`), `SMA_SPARK_RUN_LIMIT` (`5000`),
+  `SMA_SPARK_RUN_PAGE_SIZE` (`100`), `SMA_SPARK_RUN_CONCURRENCY` (`4` —
+  parallel per-pool fetches). New dep: `azure-synapse-spark>=0.7`. Stored
+  on `SparkAnalysis.spark_runs` (raw per-job records) and
+  `SparkAnalysis.run_stats` (per-pool aggregates); surfaced as a "Spark
+  execution" section in the Spark pools HTML report.
+
 ## [2.4.2] - 2026-05-11
 
 ### Added

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "synapse-migration-analyzer"
-version = "2.4.2"
+version = "2.6.5"
 description = "Analyze Azure Synapse Analytics workspaces to assess Microsoft Fabric Warehouse migration readiness."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -19,6 +19,7 @@ dependencies = [
     "azure-mgmt-monitor>=6.0.2",
     "azure-mgmt-storage>=21.1.0",
     "azure-synapse-artifacts>=0.20",
+    "azure-synapse-spark>=0.7",
     "pyodbc>=5.1",
     "pydantic>=2.7",
     "rich>=13.7",

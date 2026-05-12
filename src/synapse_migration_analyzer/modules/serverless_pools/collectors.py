@@ -142,6 +142,8 @@ def collect_daily_usage(sql: ServerlessSqlClient) -> list[ServerlessDailyUsage]:
             day=day.isoformat() if hasattr(day, "isoformat") else str(day),
             request_count=int(r.get("request_count") or 0),
             data_processed_mb=int(r.get("data_processed_mb") or 0),
+            duration_seconds=int(r.get("duration_seconds") or 0),
+            mb_seconds=int(r.get("mb_seconds") or 0),
         ))
     return out
 

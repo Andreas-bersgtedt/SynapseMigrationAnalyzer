@@ -73,10 +73,10 @@ def write_reports(result: ServerlessAnalysis, out_dir: Path, formats: Iterable[s
             lines.append("")
         if result.daily_usage:
             lines.append("## Daily data processed")
-            lines.append("| Day | Requests | Data processed (MB) |")
-            lines.append("|---|---:|---:|")
+            lines.append("| Day | Requests | Data processed (MB) | Execution time (s) |")
+            lines.append("|---|---:|---:|---:|")
             for d in result.daily_usage:
-                lines.append(f"| {d.day} | {d.request_count} | {d.data_processed_mb} |")
+                lines.append(f"| {d.day} | {d.request_count} | {d.data_processed_mb} | {d.duration_seconds} |")
             lines.append("")
         if result.top_queries:
             lines.append("## Top queries by data scanned (last 14d)")

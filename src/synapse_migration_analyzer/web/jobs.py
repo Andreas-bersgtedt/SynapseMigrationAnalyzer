@@ -12,6 +12,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import shutil
 import threading
 import time
 from collections.abc import AsyncIterator, Callable
@@ -154,6 +155,111 @@ class JobRunner:
         ev.set()
         return True
 
+    # ------------------------------------------------------------------
+    # Carry-forward
+    # ------------------------------------------------------------------
+
+    # Per-module artefact extensions that should be copied forward.
+    # ``json`` is the load-bearing one (the SPA consumes it); the others
+    # are convenience renderings used by users browsing the on-disk dir.
+    _CARRY_EXTENSIONS = ("json", "csv", "md", "html")
+
+    def _carry_forward_from_prior(self, meta: RunMeta, run_dir: Path) -> None:
+        """Copy module artefacts from the most recent workspace-matched run.
+
+        Modules already in ``meta.modules`` (i.e. selected for this run)
+        are skipped because this run is going to produce them. For every
+        other module name in :data:`KNOWN_MODULES`, if the prior run has
+        a ``<module>.json`` on disk, copy it (and any sibling csv/md/html)
+        into ``run_dir`` and record the inheritance on ``meta``.
+
+        Stamps each carried module onto ``meta.modules`` with
+        ``state == "carried"`` and ``carried_from_run_id`` set to the
+        source run, plus records the mapping on ``meta.carried_from``.
+
+        Mutates ``meta`` in place and persists it via ``self.repo.update``.
+        Best-effort: any per-file copy error is logged and skipped.
+        """
+        prior = self.repo.latest_for_workspace(
+            tenant_id=meta.tenant_id,
+            subscription_id=meta.subscription_id,
+            resource_group=meta.resource_group,
+            workspace_name=meta.workspace_name,
+            exclude_id=meta.id,
+        )
+        if prior is None:
+            return
+        try:
+            prior_dir = self.repo.run_dir(prior.id)
+        except ValueError:
+            return
+        if not prior_dir.exists():
+            return
+
+        selected = {ms.name for ms in meta.modules}
+        # For each module on the prior run, the *true* source is either
+        # the prior run itself (if it executed the module) or — when the
+        # prior run also carried the module forward — the original
+        # producer pointed at by ``prior.carried_from``. This keeps the
+        # chain from elongating across many partial runs.
+        prior_module_by_name = {ms.name: ms for ms in prior.modules}
+
+        carried: list[str] = []
+        for module in KNOWN_MODULES:
+            if module in selected:
+                continue
+            src_json = prior_dir / f"{module}.json"
+            if not src_json.exists():
+                continue
+            # Resolve the original producer.
+            source_run_id = prior.carried_from.get(module, prior.id)
+            prior_ms = prior_module_by_name.get(module)
+            if prior_ms is not None and prior_ms.state == "carried":
+                source_started_at = prior_ms.carried_from_started_at
+            elif prior_ms is not None:
+                source_started_at = prior_ms.started_at or prior.started_at
+            else:
+                source_started_at = prior.started_at
+
+            # Copy every available rendering. ``copy2`` preserves mtime so
+            # the carried-over artefact still reports its original age.
+            for ext in self._CARRY_EXTENSIONS:
+                src = prior_dir / f"{module}.{ext}"
+                if not src.exists():
+                    continue
+                dst = run_dir / src.name
+                try:
+                    shutil.copy2(src, dst)
+                except OSError as exc:
+                    log.warning(
+                        "carry-forward: could not copy %s from run %s: %s",
+                        src.name, prior.id, exc,
+                    )
+            if not (run_dir / f"{module}.json").exists():
+                # Copy failed for the load-bearing file; don't claim a
+                # carry happened.
+                continue
+            carried.append(module)
+            meta.modules.append(ModuleStatus(
+                name=module,
+                state="carried",
+                carried_from_run_id=source_run_id,
+                carried_from_started_at=source_started_at,
+            ))
+            meta.carried_from[module] = source_run_id
+
+        if carried:
+            log.info(
+                "run %s: carried %d module artefact(s) forward from run %s: %s",
+                meta.id, len(carried), prior.id, ", ".join(carried),
+            )
+            self.repo.update(meta)
+            self._publish(meta.id, {
+                "type": "modules_carried",
+                "source_run_id": prior.id,
+                "modules": carried,
+            })
+
     async def start(self, modules: list[str], *, label: str | None = None) -> RunMeta:
         unknown = [m for m in modules if m not in self._dispatch]
         if unknown:
@@ -222,9 +328,25 @@ class JobRunner:
                         cfg.output_dir = run_dir  # type: ignore[attr-defined]
                     except Exception:  # noqa: BLE001
                         log.warning("could not override output_dir on cfg %r", type(cfg))
+
+                # Carry-forward: copy every module artefact that this run is
+                # NOT going to (re)produce from the most recent completed
+                # run for the same workspace identity. Lets a user refresh
+                # one module at a time without losing the rest of the
+                # workspace view. Best-effort — failures are logged and
+                # the run continues (no carry is better than a half-broken
+                # run dir).
+                self._carry_forward_from_prior(meta, run_dir)
+
                 partial_failure = False
 
             for ms in list(meta.modules):
+                # Carry-forward entries are already terminal (state ==
+                # "carried"). They were added in ``_carry_forward_from_prior``
+                # and have no analyzer to execute; skip them so the
+                # state machine isn't reset to ``running``.
+                if ms.state == "carried":
+                    continue
                 if cancel.is_set():
                     self.repo.update_module(run_id, ms.name, state="cancelled")
                     self._publish(run_id, {

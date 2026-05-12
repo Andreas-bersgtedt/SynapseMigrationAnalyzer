@@ -120,6 +120,57 @@ class FilesystemRunRepo:
         with self._lock:
             return self._read_meta(run_id)
 
+    def latest_for_workspace(
+        self,
+        *,
+        tenant_id: str | None,
+        subscription_id: str | None,
+        resource_group: str | None,
+        workspace_name: str | None,
+        exclude_id: str | None = None,
+    ) -> RunMeta | None:
+        """Return the most recent completed run for a workspace identity.
+
+        "Completed" means ``status in {ok, failed}`` — partial-failure runs
+        still emit per-module JSON for the modules that succeeded, so their
+        artefacts are valid carry-forward sources. ``queued``/``running``/
+        ``cancelled`` runs are skipped.
+
+        Used by :class:`JobRunner` to copy module artefacts from the
+        prior run into a new run's directory so the SPA can render a
+        full workspace view even when the user only refreshed a subset
+        of modules. Workspace identity is the 4-tuple persisted on
+        :class:`RunMeta` (``tenant_id``, ``subscription_id``,
+        ``resource_group``, ``workspace_name``).
+        """
+        # Scan more than the default ``list`` cap so we can find a prior
+        # run even when there are many recent runs for other workspaces.
+        with self._lock:
+            entries = sorted(
+                (p for p in self.runs_dir.iterdir()
+                 if p.is_dir() and _ID_RE.match(p.name)),
+                key=lambda p: p.name,
+                reverse=True,
+            )
+            for p in entries:
+                if exclude_id and p.name == exclude_id:
+                    continue
+                meta = self._read_meta(p.name)
+                if meta is None:
+                    continue
+                if meta.status not in ("ok", "failed"):
+                    continue
+                if meta.tenant_id != tenant_id:
+                    continue
+                if meta.subscription_id != subscription_id:
+                    continue
+                if meta.resource_group != resource_group:
+                    continue
+                if meta.workspace_name != workspace_name:
+                    continue
+                return meta
+            return None
+
     def update(self, meta: RunMeta) -> None:
         with self._lock:
             self._write_meta(meta)

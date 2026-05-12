@@ -154,10 +154,18 @@ class FabricMappingAnalyzer:
             log.warning("runbook generation failed: %s", exc)
         self._progress.step(label="runbook")
 
-        # v2 — Fabric capacity projection (needs monitoring data).
+        # v2 — Fabric capacity projection. Combines DW DWU peak with
+        # Spark Livy + Pipelines sustained CU-hours so the recommended
+        # SKU covers all three workload classes that share a Fabric
+        # capacity, not just the dedicated SQL pool peak.
         try:
             mon = loaded.get("monitoring") or {}
-            proj = cu_projection.project_capacity(mon.get("series") or [])
+            proj = cu_projection.project_capacity(
+                mon.get("series") or [],
+                spark_payload=loaded.get("spark_pools"),
+                pipelines_payload=loaded.get("pipelines"),
+                serverless_payload=loaded.get("serverless_pools"),
+            )
             if proj is not None:
                 report.capacity_projection = CapacityProjection(
                     peak_dwu=proj.peak_dwu,
@@ -166,6 +174,11 @@ class FabricMappingAnalyzer:
                     recommended_sku=proj.recommended_sku,
                     headroom_pct=proj.headroom_pct,
                     notes=list(proj.notes),
+                    dwu_cu_contribution=proj.dwu_cu_contribution,
+                    spark_cu_contribution=proj.spark_cu_contribution,
+                    pipelines_cu_contribution=proj.pipelines_cu_contribution,
+                    serverless_cu_contribution=proj.serverless_cu_contribution,
+                    serverless_peak_day_cu_hours=proj.serverless_peak_day_cu_hours,
                 )
         except Exception as exc:  # noqa: BLE001
             log.warning("capacity projection failed: %s", exc)

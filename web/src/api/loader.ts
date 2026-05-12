@@ -27,6 +27,7 @@ import type {
   RunDelta,
   SecurityReport,
   ServerlessReport,
+  SparkPoolsReport,
   StorageReport,
 } from "../types";
 
@@ -146,6 +147,8 @@ export const loadStorage = () => fetchJson<StorageReport>("storage.json");
 
 export const loadPipelines = () => fetchJson<PipelinesReport>("pipelines.json");
 
+export const loadSparkPools = () => fetchJson<SparkPoolsReport>("spark_pools.json");
+
 export const loadServerless = () => fetchJson<ServerlessReport>("serverless_pools.json");
 
 export const loadCost = () => fetchJson<CostReport>("cost.json");
@@ -171,6 +174,8 @@ export type RunMeta = {
   config_hash: string;
   modules: Array<{
     name: string;
+    // "carried" indicates the artefact was inherited from a prior run
+    // for the same workspace identity rather than produced in this run.
     state: string;
     started_at?: string | null;
     finished_at?: string | null;
@@ -182,9 +187,17 @@ export type RunMeta = {
       label?: string | null;
       message?: string | null;
     } | null;
+    carried_from_run_id?: string | null;
+    carried_from_started_at?: string | null;
   }>;
   readiness_score: number | null;
   errors_count: number;
+  tenant_id?: string | null;
+  subscription_id?: string | null;
+  resource_group?: string | null;
+  workspace_name?: string | null;
+  /** Map module name -> source run id for carried-forward artefacts. */
+  carried_from?: Record<string, string>;
 };
 
 export type AppConfig = {

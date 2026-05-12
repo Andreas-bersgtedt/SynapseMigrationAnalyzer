@@ -294,7 +294,30 @@ function WorkspacePage({
             value={cp?.recommended_sku ?? "—"}
             sub={
               cp
-                ? `peak DWU ${Math.round(cp.peak_dwu)} → CU ${cp.estimated_cu.toFixed(1)} (${cp.headroom_pct}% headroom)`
+                ? (() => {
+                    const fmtCu = (v: number) => {
+                      if (v >= 1) return v.toFixed(1);
+                      if (v >= 0.1) return v.toFixed(2);
+                      if (v >= 0.01) return v.toFixed(3);
+                      if (v > 0) return "<0.01";
+                      return v.toFixed(1);
+                    };
+                    const dwuCu = cp.dwu_cu_contribution ?? 0;
+                    const sparkCu = cp.spark_cu_contribution ?? 0;
+                    const pipeCu = cp.pipelines_cu_contribution ?? 0;
+                    const slessCu = cp.serverless_cu_contribution ?? 0;
+                    const slessPeakDayCuH = cp.serverless_peak_day_cu_hours ?? 0;
+                    const parts: string[] = [];
+                    if (dwuCu > 0) parts.push(`DW ${fmtCu(dwuCu)}`);
+                    if (sparkCu > 0) parts.push(`Spark ${fmtCu(sparkCu)}`);
+                    if (pipeCu > 0) parts.push(`Pipelines ${fmtCu(pipeCu)}`);
+                    if (slessCu > 0) parts.push(`Serverless ${fmtCu(slessCu)}`);
+                    const breakdown = parts.length > 0 ? ` · ${parts.join(" + ")} CU` : "";
+                    const slessNote = slessPeakDayCuH > 0
+                      ? ` · Serverless peak day ≈ ${slessPeakDayCuH.toFixed(2)} CU-h (smoothed over 24 h)`
+                      : "";
+                    return `${cp.estimated_cu.toFixed(1)} CU (${cp.headroom_pct}% headroom)${breakdown}${slessNote}`;
+                  })()
                 : "no monitoring data"
             }
           />

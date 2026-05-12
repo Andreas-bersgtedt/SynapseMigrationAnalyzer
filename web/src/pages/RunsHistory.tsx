@@ -118,7 +118,18 @@ export default function RunsHistory(): JSX.Element {
             }
             return (
               <tr key={r.id}>
-                <td><code>{r.id}</code></td>
+                <td>
+                  <code>{r.id}</code>
+                  {r.carried_from && Object.keys(r.carried_from).length > 0 && (
+                    <span
+                      className="pill muted small"
+                      style={{ marginLeft: 6 }}
+                      title={`Incremental run — carried ${Object.keys(r.carried_from).length} module(s) forward: ${Object.keys(r.carried_from).join(", ")}`}
+                    >
+                      ↺ incremental
+                    </span>
+                  )}
+                </td>
                 <td>{r.label ?? <span className="muted">—</span>}</td>
                 <td>
                   <span className={`pill ${r.status === "ok" ? "ok" : r.status === "failed" ? "err" : "warn"}`}>

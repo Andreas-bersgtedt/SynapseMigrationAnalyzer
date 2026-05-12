@@ -119,6 +119,7 @@ Live checks performed (when **Validate access (live)** is clicked):
 | Control plane  | `AAD token (ARM)`                    | Service-principal credentials are valid for `management.azure.com`. |
 | Control plane  | `Synapse workspace (ARM Reader)`     | The SP has at least Reader on the Synapse workspace resource. |
 | Data plane     | `Synapse Artifacts (Synapse Artifact User)` | The SP can list pipelines via the workspace dev endpoint. |
+| Data plane     | `Spark Livy (Synapse Compute Operator)` | The SP can call Livy on a Spark pool — required for the spark_pools module's job-history collection. The check probes the first available Spark pool with `get_spark_batch_jobs(size=1)`; a 403 here means the SP is missing the action `Microsoft.Synapse/workspaces/bigDataPools/useCompute/action`, granted by the **Synapse Compute Operator** role (or higher, e.g. Synapse Administrator) on the pool. If the workspace has no Spark pools the check passes with `no Spark pools — skipped`. |
 | Data plane     | `AAD token (SQL)`                    | A token can be issued for `database.windows.net`. |
 | Data plane     | `Serverless SQL SELECT 1 (...)`      | TCP + login + query on the built-in serverless endpoint. |
 | Data plane     | `Dedicated SQL SELECT 1 (...)`       | Same against the dedicated pool — only when `SYNAPSE_DEDICATED_POOL` is set. |

@@ -18,7 +18,8 @@ def test_run_checks_offline_returns_results() -> None:
     assert "Output dir writable" in names
     # Live checks should be SKIP when --offline is set
     live = [r for r in report.results if r.name in (
-        "AAD token (ARM)", "Synapse workspace reachable", "SQL access token")]
+        "AAD token (ARM)", "Synapse workspace reachable",
+        "Spark Livy (Synapse Compute Operator)", "SQL access token")]
     assert all(r.status == "skip" for r in live)
 
 

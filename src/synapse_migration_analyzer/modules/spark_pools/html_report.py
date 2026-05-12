@@ -28,7 +28,8 @@ _TEMPLATE = """<!doctype html>
  <div class="stat"><div class="label">Spark job defs</div><div class="value">{{ r.spark_job_definitions|length }}</div></div>
  <div class="stat"><div class="label">Lint findings</div><div class="value">{{ r.notebook_lint_findings|length }}</div></div>
  <div class="stat"><div class="label">Libraries</div><div class="value">{{ r.libraries|length }}</div></div>
- <div class="stat"><div class="label">Job runs</div><div class="value">{{ r.job_runs|length }}</div></div>
+ <div class="stat"><div class="label">Spark runs (Livy)</div><div class="value">{{ r.spark_runs|length }}</div></div>
+ <div class="stat"><div class="label">Est. CU-h (Fabric Spark)</div><div class="value">{{ "%.1f"|format(total_cu_hours) }}</div></div>
 </div>
 
 <div class="toc">
@@ -39,6 +40,7 @@ _TEMPLATE = """<!doctype html>
  {% if r.notebook_lint_findings %}<a href="#lint">Lint findings</a>{% endif %}
  {% if r.spark_job_definitions %}<a href="#sjd">Spark job defs</a>{% endif %}
  {% if r.libraries %}<a href="#libs">Libraries</a>{% endif %}
+ {% if r.run_stats %}<a href="#runstats">Spark execution</a>{% endif %}
  {% if r.job_runs %}<a href="#runs">Job runs</a>{% endif %}
  {% if r.errors %}<a href="#errors">Errors</a>{% endif %}
 </div>
@@ -168,6 +170,34 @@ _TEMPLATE = """<!doctype html>
 </table>
 {% endif %}
 
+{% if r.run_stats %}
+<h2 id="runstats">Spark execution (Livy job history)</h2>
+<p class="muted small">vCore-seconds × 0.5 = Fabric CU-seconds (1 CU = 2 Spark vCores).
+Pulled from the Synapse Spark Livy API; covers both notebook (interactive)
+sessions and pipeline/SJD-triggered (scheduled) batch jobs.</p>
+<table>
+ <tr><th>Pool</th><th>Kind</th><th>Window</th><th class="num">Runs</th><th class="num">Succeeded</th>
+  <th class="num">Failed</th><th class="num">Duration h</th><th class="num">vCore-h</th>
+  <th class="num">Est. CU-h (Fabric)</th><th class="num">Avg vCore-h/run</th></tr>
+ {% for s in r.run_stats %}
+  {% for w in s.windows %}
+  <tr>
+   <td><code>{{ s.pool }}</code></td>
+   <td>{% if s.kind == 'interactive' %}<span class="pill info">interactive</span>{% else %}<span class="pill ok">scheduled</span>{% endif %}</td>
+   <td>{{ w.window_days }}d</td>
+   <td class="num">{{ w.run_count }}</td>
+   <td class="num">{{ w.succeeded }}</td>
+   <td class="num">{{ w.failed }}</td>
+   <td class="num">{{ "%.2f"|format(w.total_duration_hours) }}</td>
+   <td class="num">{{ "%.2f"|format(w.total_vcore_hours) }}</td>
+   <td class="num">{{ "%.2f"|format(w.est_cu_hours_fabric_spark) }}</td>
+   <td class="num">{{ "%.2f"|format(w.avg_vcore_hours_per_run) if w.avg_vcore_hours_per_run is not none else '' }}</td>
+  </tr>
+  {% endfor %}
+ {% endfor %}
+</table>
+{% endif %}
+
 {% if r.job_runs %}
 <h2 id="runs">Job runs ({{ r.job_runs|length }})</h2>
 <table>
@@ -194,7 +224,16 @@ def write_html(result: SparkAnalysis, out_dir: Path) -> Path:
     lint_by_nb: dict[str, list[Any]] = defaultdict(list)
     for f in result.notebook_lint_findings:
         lint_by_nb[f.notebook].append(f)
-    html = template.render(r=result, lint_by_nb=dict(lint_by_nb), css=SHARED_CSS, js=SHARED_FILTER_JS)
+    total_cu_hours = sum(
+        (r.est_cu_hours_fabric_spark or 0.0) for r in result.spark_runs
+    )
+    html = template.render(
+        r=result,
+        lint_by_nb=dict(lint_by_nb),
+        css=SHARED_CSS,
+        js=SHARED_FILTER_JS,
+        total_cu_hours=total_cu_hours,
+    )
     path = out_dir / "spark_pools.html"
     path.write_text(html, encoding="utf-8")
     return path

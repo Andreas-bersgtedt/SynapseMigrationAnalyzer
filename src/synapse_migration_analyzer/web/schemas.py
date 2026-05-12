@@ -7,7 +7,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-ModuleState = Literal["queued", "running", "ok", "failed", "skipped", "cancelled"]
+ModuleState = Literal[
+    "queued", "running", "ok", "failed", "skipped", "cancelled", "carried",
+]
 RunState = Literal["queued", "running", "ok", "failed", "cancelled"]
 
 # The module names the API accepts. Sourced from the central analyzer
@@ -36,6 +38,11 @@ class ModuleStatus(BaseModel):
     duration_ms: int | None = None
     error: str | None = None
     progress: ModuleProgress | None = None
+    # When ``state == "carried"`` this is the run id whose artefact was
+    # copied forward, plus the wall-clock time at which that artefact was
+    # originally produced. ``None`` for modules executed by this run.
+    carried_from_run_id: str | None = None
+    carried_from_started_at: datetime | None = None
 
 
 class RunMeta(BaseModel):
@@ -56,6 +63,10 @@ class RunMeta(BaseModel):
     subscription_id: str | None = None
     resource_group: str | None = None
     workspace_name: str | None = None
+    # Map of module name -> source run id for artefacts that were inherited
+    # from a previous run (because the user did not select them in this run
+    # and a prior workspace-matched run produced them). Empty for fresh runs.
+    carried_from: dict[str, str] = Field(default_factory=dict)
 
 
 class StartRunRequest(BaseModel):

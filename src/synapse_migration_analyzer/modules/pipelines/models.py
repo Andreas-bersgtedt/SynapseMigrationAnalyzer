@@ -141,6 +141,13 @@ class PipelineRunWindowStats(BaseModel):
     # or skip it, so it is a baseline approximation.
     est_non_copy_activity_runs: int = 0
     est_cu_hours_from_orchestration: float = 0.0
+    # v2.6.3 — maximum total CU-hours (DIU + MDF vCore + orchestration)
+    # observed in any single UTC day inside this window. Used by the
+    # Fabric SKU recommender so the recommended capacity covers the
+    # busiest day, not the window average. ``None`` when no runs were
+    # observed in this window (vs. ``0.0`` when runs occurred but none
+    # produced CU consumption — e.g. all instantaneous failures).
+    peak_day_cu_hours: float | None = None
 
 
 class PipelineRunStats(BaseModel):
