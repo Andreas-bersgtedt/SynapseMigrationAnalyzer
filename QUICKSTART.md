@@ -853,7 +853,7 @@ The SPA gets four extra pages when the API is detected (`GET /api/healthz`):
 
 | Page | What it does |
 | --- | --- |
-| **Configuration** | Read / write `.env` from the browser. Secrets are write-only; reads return only `set` / `unset`. Includes a **Validate** button. |
+| **Configuration** | Read / write `.env` from the browser. Secrets are write-only; reads return only `set` / `unset`. Includes a **Validate** button and a **Backup & restore** panel that exports every run under `runs/` as a single zip (`GET /api/runs-archive/export`) and re-imports it on another machine with skip / overwrite / rename conflict modes. |
 | **Run** | Pick which modules to run (same module set as `analyze-all`), give the run an optional label, watch live progress over Server-Sent Events. |
 | **Runs** | History of all completed runs with status, duration, error count, readiness score. |
 | **Diff** | Compare any two runs using the same `run_manifest` engine that powers `sma run-delta`. |
@@ -978,6 +978,18 @@ sma run-delta
 
 # Just rebuild the top-level landing page
 sma index
+
+# Generate a portable Access & Security markdown report from the latest run
+sma access-report
+
+# Write the shipped effort rate-card to a hand-editable JSON file
+sma effort-card
+
+# Dump the JSON Schema for every module's result model
+sma export-schema
+
+# Boot the browser-driven control plane (requires the [web] extra)
+sma serve --with-api
 
 # Self-test (host + Azure auth pre-flight)
 sma doctor
