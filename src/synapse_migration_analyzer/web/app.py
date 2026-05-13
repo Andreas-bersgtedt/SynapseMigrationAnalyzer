@@ -18,11 +18,13 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from .. import __version__
 from .api import config as config_api
 from .api import diff as diff_api
+from .api import effort_card as effort_card_api
 from .api import estate as estate_api
 from .api import events as events_api
 from .api import healthz as healthz_api
 from .api import modules as modules_api
 from .api import runs as runs_api
+from .api import runs_archive as runs_archive_api
 from .api import schema as schema_api
 from .deps import AppState, get_state
 
@@ -93,7 +95,9 @@ def create_app(
     app.include_router(healthz_api.router, prefix="/api")
     app.include_router(schema_api.router, prefix="/api/schema")
     app.include_router(config_api.router, prefix="/api/config")
+    app.include_router(effort_card_api.router, prefix="/api/effort-card")
     app.include_router(runs_api.router, prefix="/api/runs")
+    app.include_router(runs_archive_api.router, prefix="/api/runs-archive")
     app.include_router(events_api.router, prefix="/api/runs")
     app.include_router(modules_api.router, prefix="/api/runs")
     app.include_router(diff_api.router, prefix="/api/runs")

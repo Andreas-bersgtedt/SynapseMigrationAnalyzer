@@ -66,6 +66,10 @@ def export_estate_csv(state: AppState = Depends(get_state)) -> StreamingResponse
         "fabric_estimated_monthly_cost",
         "fabric_cost_delta_abs",
         "fabric_cost_delta_pct",
+        "effort_hours_p50",
+        "effort_hours_p90",
+        "effort_days_p50",
+        "effort_days_p90",
     ])
     for ws in report.workspaces:
         w.writerow([
@@ -90,6 +94,10 @@ def export_estate_csv(state: AppState = Depends(get_state)) -> StreamingResponse
             "" if ws.fabric_estimated_monthly_cost is None else ws.fabric_estimated_monthly_cost,
             "" if ws.fabric_cost_delta_abs is None else ws.fabric_cost_delta_abs,
             "" if ws.fabric_cost_delta_pct is None else ws.fabric_cost_delta_pct,
+            "" if ws.effort_hours_p50 is None else ws.effort_hours_p50,
+            "" if ws.effort_hours_p90 is None else ws.effort_hours_p90,
+            "" if ws.effort_days_p50 is None else ws.effort_days_p50,
+            "" if ws.effort_days_p90 is None else ws.effort_days_p90,
         ])
     buf.seek(0)
     return StreamingResponse(

@@ -224,6 +224,11 @@ class EstateWorkspace(BaseModel):
     fabric_estimated_monthly_cost: float | None = None
     fabric_cost_delta_abs: float | None = None
     fabric_cost_delta_pct: float | None = None
+    # Estimated migration effort (fabric_mapping.effort_summary)
+    effort_hours_p50: float | None = None
+    effort_hours_p90: float | None = None
+    effort_days_p50: int | None = None
+    effort_days_p90: int | None = None
     history: list[EstateHistoryPoint] = Field(default_factory=list)
 
 
@@ -240,6 +245,10 @@ class EstateTotals(BaseModel):
     projected_fabric_cu_total: float | None = None
     actual_monthly_cost_total: float | None = None
     fabric_estimated_monthly_cost_total: float | None = None
+    effort_hours_p50_total: float | None = None
+    effort_hours_p90_total: float | None = None
+    effort_days_p50_total: int | None = None
+    effort_days_p90_total: int | None = None
 
 
 class EstateTopBlocker(BaseModel):

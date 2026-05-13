@@ -3,7 +3,7 @@ import { CHAPTERS, CHAPTERS_BY_SLUG } from "../help/chapters";
 
 describe("user-guide chapters", () => {
   it("loads every chapter with non-empty body", () => {
-    expect(CHAPTERS.length).toBe(20);
+    expect(CHAPTERS.length).toBe(23);
     for (const c of CHAPTERS) {
       expect(c.slug, `slug for ${c.title}`).toMatch(/^[A-Za-z0-9_-]+$/);
       expect(c.body.length, `body for ${c.slug}`).toBeGreaterThan(50);
@@ -32,6 +32,7 @@ describe("user-guide chapters", () => {
       "10-runs-history",
       "11-diff-page",
       "12-configuration",
+      "19-effort",
     ]) {
       expect(CHAPTERS_BY_SLUG[slug], slug).toBeDefined();
     }

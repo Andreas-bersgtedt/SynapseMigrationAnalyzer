@@ -44,7 +44,7 @@ Synapse workspace                                          [ Discover workspaces
   Workspace            [ syn-prod-eu (rg-synapse-prod, westeurope) — current  v ]
                        └─ "Enter manually…" reverts to plain text fields
 
-[ Save ]    [ Validate (fields) ]    [ Validate access (live) ]
+[ Save configuration ]    [ Validate fields ]    [ Validate live access ]
 
 Validation
   Configuration
@@ -91,9 +91,9 @@ below.
 
 | Button                       | Effect |
 | ---------------------------- | ------ |
-| **Save**                     | Posts the form to `/api/config`. The server updates `./.env` atomically and reloads the in-process settings. |
-| **Validate (fields)**        | Field/format only: env vars present, GUIDs well-formed, output dir writable. Instant. |
-| **Validate access (live)**   | Field checks **plus** live connectivity using the saved service principal. Tests Azure ARM (token + `workspaces.get`) and the Synapse data plane (Artifacts REST + `SELECT 1` against the serverless and — when `SYNAPSE_DEDICATED_POOL` is set — the dedicated SQL endpoint). Takes a few seconds. Use this to confirm both **Azure RBAC** and **Synapse data-plane RBAC** are in place before kicking off a run. |
+| **Save configuration**       | Posts the form to `/api/config`. The server updates `./.env` atomically and reloads the in-process settings. |
+| **Validate fields**          | Local checks only: env vars present, GUIDs well-formed, output directory writable. Instant. |
+| **Validate live access**     | Field checks **plus** live connectivity using the saved service principal. Tests Azure ARM (token + `workspaces.get`) and the Synapse data plane (Artifacts REST + `SELECT 1` against the serverless and — when `SYNAPSE_DEDICATED_POOL` is set — the dedicated SQL endpoint). Takes a few seconds. Use this to confirm both **Azure RBAC** and **Synapse data-plane RBAC** are in place before kicking off a run. |
 
 ### Validation results
 
@@ -112,7 +112,7 @@ Result states:
   missing, etc.). Use this to pinpoint the missing role assignment or
   driver.
 
-Live checks performed (when **Validate access (live)** is clicked):
+Live checks performed (when **Validate live access** is clicked):
 
 | Category       | Check                                | Confirms |
 | -------------- | ------------------------------------ | -------- |
@@ -141,7 +141,7 @@ pick from a discovered list instead of typing.
 
 | Control                | Effect |
 | ---------------------- | ------ |
-| **Discover workspaces**| Calls `POST /api/config/validate?live=true` and caches the result. The dropdown appears once the call completes. Same call as **Validate access (live)** — you'll see the live validation results below the form. |
+| **Discover workspaces**| Calls `POST /api/config/validate?live=true` and caches the result. The dropdown appears once the call completes. Same call as **Validate live access** — you'll see the live validation results below the form. |
 | **Refresh list**       | Re-runs the discovery call. |
 | **Workspace** dropdown | Lists every workspace the SP can read in the configured subscription, formatted as `name (resource group, location)`. The currently saved workspace is marked `— current`. Picking a different one updates the form fields; click **Save** to persist. |
 | **Enter manually…**    | Last entry in the dropdown. Drops back to plain text fields when you need to type a workspace that the SP can't list (e.g. cross-tenant or first-time onboarding before the SP has Reader). The link **Pick from list** above the inputs jumps back to the dropdown. |
@@ -159,7 +159,7 @@ saved workspace is honoured without restarting `sma serve`.
    pick the target workspace from the dropdown. (If the SP can't yet
    list workspaces, choose **Enter manually…** and type the resource
    group and workspace name.)
-3. Click **Save**, then **Validate access (live)**.
+3. Click **Save configuration**, then **Validate live access**.
 4. When every row under **Control plane** and **Data plane** is green,
    go to [09. Run page](09-run-page.md) and start a run.
 5. If a Data-plane check fails with `Login failed for user '<token-identified
@@ -174,7 +174,7 @@ saved workspace is honoured without restarting `sma serve`.
 
 1. Generate the new secret in Azure AD.
 2. Paste it into **Client secret**.
-3. **Save** → **Validate access (live)**.
+3. **Save configuration** → **Validate live access**.
 
 The page never displays the existing secret — leave the field empty
 on a Save if you only changed other fields.
@@ -182,7 +182,7 @@ on a Save if you only changed other fields.
 ### "Switch to a different ODBC driver"
 
 `sma doctor --json` lists the installed drivers. Copy the exact name
-into the **ODBC driver** field; click **Validate** to confirm.
+into the **ODBC driver** field; click **Validate fields** to confirm.
 
 ## Advanced environment variables
 
@@ -205,3 +205,39 @@ Not exposed in the UI \u2014 set these in `.env` directly when needed.
 - [01. Getting started](01-getting-started.md) — initial `.env` setup
 - [09. Run page](09-run-page.md) — use the saved configuration
 - [14. Security & deployment](14-security.md) — how secrets are handled
+
+## Backup & restore
+
+The Configuration page exposes a collapsed **Backup & restore** panel
+that lets you export every run under `runs/` as a single zip file and
+import that zip back on another machine.
+
+### Export
+
+Click **Download all run data (.zip)** to fetch a zip from
+`GET /api/runs-archive/export`. The browser will offer a save dialog
+for a file named `sma-runs-<timestamp>.zip`. The archive contains a
+`manifest.json` at the root plus `runs/<id>/` trees for every run.
+
+`.env` lives **outside** `runs_dir` and is therefore never included.
+As defence-in-depth the archiver also drops dotfiles and refuses to
+follow symlinks.
+
+### Import
+
+Select an export zip via **Import zip file**, choose how to handle
+duplicate run ids (**Skip existing** is the default), then click
+**Import**. The archive is validated before any files are written —
+path-traversal, symlink entries, oversized files, and zip-bomb
+compression ratios are all rejected. Valid runs are extracted to a
+tempdir and atomically moved into `runs_dir`.
+
+Conflict modes:
+
+- **Skip existing** — leave a run already present on disk alone.
+- **Overwrite** — replace the existing run directory.
+- **Rename incoming run** — keep both by assigning the incoming run a
+  fresh id (the new id is written into its `run.json`).
+
+A run that is currently `queued` or `running` cannot be overwritten —
+cancel it first via the runs history.

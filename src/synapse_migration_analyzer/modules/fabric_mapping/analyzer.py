@@ -8,11 +8,21 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ...config import AppConfig
+from ...effort import (
+    EffortRollup,
+    RateCard,
+    build_estimates,
+    build_rollup,
+    days_from_hours,
+    default_card,
+)
 from . import cu_projection, readiness, runbook, rules
 from .models import (
     CapacityProjection,
+    EffortSummary,
     FabricMappingReport,
     ModuleSummary,
+    PhaseEffortSummary,
     ReadinessSummary,
     Recommendation,
     RunbookStep,
@@ -54,11 +64,15 @@ class FabricMappingAnalyzer:
         cfg: AppConfig,
         *,
         progress: "ProgressReporter | None" = None,
+        effort_card: RateCard | None = None,
+        effort_card_source: str = "default",
     ) -> None:
         from ...progress import NullProgress
 
         self._cfg = cfg
         self._progress = progress or NullProgress()
+        self._effort_card = effort_card or default_card()
+        self._effort_card_source = effort_card_source
 
     def run(self) -> FabricMappingReport:
         report = FabricMappingReport(
@@ -183,5 +197,46 @@ class FabricMappingAnalyzer:
         except Exception as exc:  # noqa: BLE001
             log.warning("capacity projection failed: %s", exc)
         self._progress.step(label="capacity_projection")
+
+        # v2.10 — configurable effort estimates per runbook step.
+        try:
+            estimates = build_estimates(
+                report.runbook, report.recommendations, loaded, self._effort_card,
+            )
+            est_by_order = {e.step_order: e for e in estimates}
+            for step in report.runbook:
+                est = est_by_order.get(step.order)
+                if est is None:
+                    continue
+                step.effort_hours_p50 = est.p50_hours
+                step.effort_hours_p90 = est.p90_hours
+                step.effort_breakdown = est.breakdown.to_dict()
+            rollup: EffortRollup = build_rollup(
+                report.runbook,
+                estimates,
+                card_source=self._effort_card_source,
+                card_version=self._effort_card.version,
+            )
+            report.effort_summary = EffortSummary(
+                total_p50_hours=rollup.total_p50_hours,
+                total_p90_hours=rollup.total_p90_hours,
+                total_p50_days=days_from_hours(rollup.total_p50_hours),
+                total_p90_days=days_from_hours(rollup.total_p90_hours),
+                per_phase=[
+                    PhaseEffortSummary(
+                        phase=p.phase,
+                        p50_hours=p.p50_hours,
+                        p90_hours=p.p90_hours,
+                        step_count=p.step_count,
+                        p50_days=days_from_hours(p.p50_hours),
+                        p90_days=days_from_hours(p.p90_hours),
+                    )
+                    for p in rollup.per_phase
+                ],
+                card_source=rollup.card_source,
+                card_version=rollup.card_version,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("effort estimation failed: %s", exc)
 
         return report

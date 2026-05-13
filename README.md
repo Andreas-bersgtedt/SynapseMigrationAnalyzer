@@ -66,6 +66,16 @@ A new CLI subcommand is registered in [cli.py](src/synapse_migration_analyzer/cl
   - For `analyze-storage`: `Reader` on each storage account attached to the workspace (default ADLS Gen2 + storage accounts referenced by linked services). Granting Reader at the subscription / RG scope is the simplest. Set `SMA_STORAGE_INCLUDE_ALL=1` to opt back into the legacy subscription-wide scan.
   - **Synapse SQL access** to each dedicated pool (granted via `CREATE USER [<sp>] FROM EXTERNAL PROVIDER` in the pool, plus role memberships such as `db_datareader`, `VIEW DATABASE STATE` for DMVs, and `VIEW DEFINITION` so the catalog exposes stored procedures and user-defined functions in `sys.objects` / `sys.sql_modules`).
 
+> For a reviewer-ready summary of the analyzer's full access surface
+> (per-module RBAC, what ends up in output, what does not leave the host),
+> see [**docs/user-guide/17-access-and-security.md**](docs/user-guide/17-access-and-security.md)
+> or run `sma access-report --out access-report.md`.
+>
+> For a breakdown of what running the analyzer *costs* (essentially zero —
+> all reads are free-tier Azure APIs and DMV scans on capacity you already
+> pay for) and how SMA projects Fabric cost, see
+> [**docs/user-guide/18-cost.md**](docs/user-guide/18-cost.md).
+
 ## Setup
 
 Quickstart bootstrapper (Windows):

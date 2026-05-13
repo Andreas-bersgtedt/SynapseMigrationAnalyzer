@@ -134,17 +134,37 @@ _TEMPLATE = """<!doctype html>
 
 {% if r.runbook %}
 <h2 id="runbook">Runbook ({{ r.runbook|length }} steps)</h2>
+{% if r.effort_summary %}
+<p class="muted small">
+ Estimated effort: <strong>{{ '%.1f'|format(r.effort_summary.total_p50_hours) }} h P50</strong>
+ / <strong>{{ '%.1f'|format(r.effort_summary.total_p90_hours) }} h P90</strong>
+ {% if r.effort_summary.total_p50_days is not none and r.effort_summary.total_p90_days is not none -%}
+ &mdash; <strong>{{ r.effort_summary.total_p50_days }} P50</strong> /
+ <strong>{{ r.effort_summary.total_p90_days }} P90</strong> resource-days
+ (8 h/day &times; 1.15 spillage, rounded up)
+ {%- endif %}
+ &mdash; rate card: <code>{{ r.effort_summary.card_source }}</code> (v{{ r.effort_summary.card_version }}).
+ {% if r.effort_summary.per_phase %}
+ Per phase:
+ {% for p in r.effort_summary.per_phase -%}
+  <code>{{ p.phase }}</code> {{ '%.1f'|format(p.p50_hours) }}/{{ '%.1f'|format(p.p90_hours) }} h{% if p.p50_days is not none %} ({{ p.p50_days }}/{{ p.p90_days }} d){% endif %}{% if not loop.last %}, {% endif %}
+ {%- endfor %}.
+ {% endif %}
+</p>
+{% endif %}
 {% for phase, steps in extras.runbook_by_phase.items() %}
 <details {% if loop.first %}open{% endif %}>
  <summary><strong>Phase: {{ phase }}</strong> &mdash; {{ steps|length }} step(s)</summary>
  <table>
-  <tr><th class="num">#</th><th>Title</th><th>Severity</th><th>Effort</th><th>Target</th><th>Detail</th><th>Rollback</th></tr>
+  <tr><th class="num">#</th><th>Title</th><th>Severity</th><th>Effort</th><th>P50 (h)</th><th>P90 (h)</th><th>Target</th><th>Detail</th><th>Rollback</th></tr>
   {% for s in steps %}
   <tr>
    <td class="num">{{ s.order }}</td>
    <td>{{ s.title }}</td>
    <td>{% set sv = s.severity %}<span class="pill {{ 'err' if sv == 'blocker' else ('warn' if sv == 'warning' else 'info') }}">{{ sv }}</span></td>
    <td>{{ s.effort }}</td>
+   <td class="num">{{ '%.1f'|format(s.effort_hours_p50) if s.effort_hours_p50 is not none else '' }}</td>
+   <td class="num">{{ '%.1f'|format(s.effort_hours_p90) if s.effort_hours_p90 is not none else '' }}</td>
    <td><code class="small">{{ s.target or '' }}</code></td>
    <td class="small">{{ s.detail }}</td>
    <td class="small muted">{{ s.rollback or '' }}</td>

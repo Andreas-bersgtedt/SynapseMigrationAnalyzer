@@ -74,6 +74,23 @@ Vulnerabilities in this surface are in scope for [the report process above](#rep
 Deployment scenarios that involve exposing `--with-api` on a shared host without
 additional auth are explicitly out of scope; that is documented as unsafe.
 
+## Access surface and reviewer reports
+
+For an exhaustive, version-stamped list of every Azure / Synapse / SQL surface
+the analyzer touches — including per-module RBAC, what ends up in output, and
+what does not leave the host — see the user-guide chapter
+[**17. Tool access & security implications**](docs/user-guide/17-access-and-security.md).
+
+A reviewer-ready Markdown report can be generated locally with no Azure
+access:
+
+```
+sma access-report --out access-report.md
+```
+
+Attach this report to change-advisory tickets when running SMA against a
+production workspace.
+
 ## Supported versions
 
 Only the latest released version on `main` receives security fixes.

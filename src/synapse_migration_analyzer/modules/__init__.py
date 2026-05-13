@@ -70,10 +70,31 @@ def _storage(cfg: AppConfig, progress: ProgressReporter) -> tuple[Any, Callable[
 
 
 def _fabric_mapping(cfg: AppConfig, progress: ProgressReporter) -> tuple[Any, Callable[..., list[Path]]]:
+    import os
+    from pathlib import Path as _Path
+
+    from ..effort import default_card, load_card
     from .fabric_mapping.analyzer import FabricMappingAnalyzer
     from .fabric_mapping.reporting import write_reports
 
-    return FabricMappingAnalyzer(cfg, progress=progress).run(), write_reports
+    # Look for an override card next to the run output dir or in CWD.
+    # SMA_EFFORT_CARD wins, then ./effort-card.json (relative to CWD),
+    # then the shipped defaults.
+    card = default_card()
+    source = "default"
+    env = os.environ.get("SMA_EFFORT_CARD")
+    if env and _Path(env).is_file():
+        card = load_card(env)
+        source = str(_Path(env).resolve())
+    elif _Path("effort-card.json").is_file():
+        card = load_card("effort-card.json")
+        source = str(_Path("effort-card.json").resolve())
+    return (
+        FabricMappingAnalyzer(
+            cfg, progress=progress, effort_card=card, effort_card_source=source,
+        ).run(),
+        write_reports,
+    )
 
 
 def _governance(cfg: AppConfig, progress: ProgressReporter) -> tuple[Any, Callable[..., list[Path]]]:

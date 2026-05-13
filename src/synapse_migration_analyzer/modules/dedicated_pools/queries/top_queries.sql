@@ -27,4 +27,5 @@ LEFT JOIN sys.dm_pdw_exec_sessions AS s
        ON s.session_id = r.session_id
 WHERE r.submit_time >= DATEADD(DAY, -14, SYSUTCDATETIME())
   AND r.[command] IS NOT NULL
-ORDER BY r.total_elapsed_time DESC;
+ORDER BY r.total_elapsed_time DESC
+OPTION (LABEL = 'sma:top_queries');

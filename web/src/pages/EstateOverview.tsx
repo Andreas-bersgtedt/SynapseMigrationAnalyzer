@@ -237,6 +237,21 @@ export default function EstateOverview() {
           value={fmtCurrency(t.fabric_estimated_monthly_cost_total, cur)}
           sub="modeled equivalent"
         />
+        <StatCard
+          label="Estimated migration effort"
+          value={
+            t.effort_hours_p50_total == null
+              ? "\u2014"
+              : `${fmtNum(t.effort_hours_p50_total, 0)} h P50`
+          }
+          sub={
+            t.effort_days_p50_total != null && t.effort_days_p90_total != null
+              ? `${fmtNum(t.effort_days_p50_total, 0)} / ${fmtNum(t.effort_days_p90_total, 0)} resource-days (P50 / P90)`
+              : t.effort_hours_p90_total == null
+              ? "sum of runbook P50 across workspaces"
+              : `${fmtNum(t.effort_hours_p90_total, 0)} h P90 \u00b7 sum of latest runs`
+          }
+        />
       </div>
 
       <ReadinessChart workspaces={report.workspaces} />
@@ -273,6 +288,8 @@ export default function EstateOverview() {
                   <th title="Modeled Fabric capacity monthly spend">Projected $/mo (Fabric)</th>
                   <th title="Recommended Fabric capacity SKU">Fabric SKU</th>
                   <th title="Estimated Fabric capacity units">Proj. CU</th>
+                  <th title="Estimated migration effort (runbook P50 / P90 hours)">Effort (h)</th>
+                  <th title="Estimated resource-days = ceil((hours / 8) × 1.15)">Days (P50/P90)</th>
                   <th>Trend</th>
                   <th>Runs</th>
                   <th />
@@ -318,6 +335,26 @@ export default function EstateOverview() {
                     </td>
                     <td>{ws.recommended_fabric_sku ?? "—"}</td>
                     <td className="num">{fmtNum(ws.projected_fabric_cu, 1)}</td>
+                    <td
+                      className="num"
+                      title={
+                        ws.effort_hours_p90 == null
+                          ? undefined
+                          : `P90: ${fmtNum(ws.effort_hours_p90, 0)} h`
+                      }
+                    >
+                      {ws.effort_hours_p50 == null
+                        ? "\u2014"
+                        : `${fmtNum(ws.effort_hours_p50, 0)} / ${fmtNum(ws.effort_hours_p90, 0)}`}
+                    </td>
+                    <td
+                      className="num"
+                      title="ceil((hours / 8) × 1.15) — 8 h/day plus 15 % spillage"
+                    >
+                      {ws.effort_days_p50 == null
+                        ? "\u2014"
+                        : `${ws.effort_days_p50} / ${ws.effort_days_p90 ?? "\u2014"}`}
+                    </td>
                     <td>
                       <Sparkline history={ws.history} />
                     </td>

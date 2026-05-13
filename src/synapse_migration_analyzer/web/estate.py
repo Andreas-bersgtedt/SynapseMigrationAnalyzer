@@ -144,6 +144,10 @@ class EstateIndex:
                 fabric_estimated_monthly_cost=latest["fabric_estimated_monthly_cost"],
                 fabric_cost_delta_abs=latest["fabric_cost_delta_abs"],
                 fabric_cost_delta_pct=latest["fabric_cost_delta_pct"],
+                effort_hours_p50=latest["effort_hours_p50"],
+                effort_hours_p90=latest["effort_hours_p90"],
+                effort_days_p50=latest["effort_days_p50"],
+                effort_days_p90=latest["effort_days_p90"],
                 history=history,
             ))
 
@@ -323,6 +327,10 @@ def _extract_run(run_dir: Path) -> dict[str, Any] | None:
         "fabric_estimated_monthly_cost": fabric_cmp.get("fabric_estimated_monthly_cost"),
         "fabric_cost_delta_abs": fabric_cmp.get("delta_abs"),
         "fabric_cost_delta_pct": fabric_cmp.get("delta_pct"),
+        "effort_hours_p50": ((fm or {}).get("effort_summary") or {}).get("total_p50_hours"),
+        "effort_hours_p90": ((fm or {}).get("effort_summary") or {}).get("total_p90_hours"),
+        "effort_days_p50": ((fm or {}).get("effort_summary") or {}).get("total_p50_days"),
+        "effort_days_p90": ((fm or {}).get("effort_summary") or {}).get("total_p90_days"),
         "blockers_raw": blockers,
     }
 
@@ -413,6 +421,10 @@ def _totals(workspaces: Iterable[EstateWorkspace]) -> EstateTotals:
         for w in ws_list
         if w.fabric_estimated_monthly_cost is not None
     ]
+    effort_p50_vals = [w.effort_hours_p50 for w in ws_list if w.effort_hours_p50 is not None]
+    effort_p90_vals = [w.effort_hours_p90 for w in ws_list if w.effort_hours_p90 is not None]
+    effort_days_p50_vals = [w.effort_days_p50 for w in ws_list if w.effort_days_p50 is not None]
+    effort_days_p90_vals = [w.effort_days_p90 for w in ws_list if w.effort_days_p90 is not None]
     subs = {(w.subscription_id or "(unknown)") for w in ws_list}
     tenants = {(w.tenant_id or "(unknown)") for w in ws_list}
     return EstateTotals(
@@ -432,6 +444,10 @@ def _totals(workspaces: Iterable[EstateWorkspace]) -> EstateTotals:
         fabric_estimated_monthly_cost_total=(
             sum(fabric_cost_vals) if fabric_cost_vals else None
         ),
+        effort_hours_p50_total=sum(effort_p50_vals) if effort_p50_vals else None,
+        effort_hours_p90_total=sum(effort_p90_vals) if effort_p90_vals else None,
+        effort_days_p50_total=sum(effort_days_p50_vals) if effort_days_p50_vals else None,
+        effort_days_p90_total=sum(effort_days_p90_vals) if effort_days_p90_vals else None,
     )
 
 

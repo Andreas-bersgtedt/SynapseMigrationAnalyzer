@@ -26,6 +26,9 @@ import configuration from "../../../docs/user-guide/12-configuration.md?raw";
 import troubleshooting from "../../../docs/user-guide/13-troubleshooting.md?raw";
 import security from "../../../docs/user-guide/14-security.md?raw";
 import faq from "../../../docs/user-guide/15-faq.md?raw";
+import accessSecurity from "../../../docs/user-guide/17-access-and-security.md?raw";
+import cost from "../../../docs/user-guide/18-cost.md?raw";
+import effortChapter from "../../../docs/user-guide/19-effort.md?raw";
 
 export type ChapterSection =
   | "Orientation"
@@ -151,6 +154,27 @@ export const CHAPTERS: Chapter[] = [
     short: "Security",
     section: "Reference",
     body: security,
+  },
+  {
+    slug: "17-access-and-security",
+    title: "17. Tool access & security implications",
+    short: "Access & security",
+    section: "Reference",
+    body: accessSecurity,
+  },
+  {
+    slug: "18-cost",
+    title: "18. Cost of running the analyzer",
+    short: "Cost",
+    section: "Reference",
+    body: cost,
+  },
+  {
+    slug: "19-effort",
+    title: "19. Effort estimates & rate card",
+    short: "Effort",
+    section: "Reference",
+    body: effortChapter,
   },
   {
     slug: "15-faq",

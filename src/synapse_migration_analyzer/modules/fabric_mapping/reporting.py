@@ -58,6 +58,38 @@ def write_reports(result: FabricMappingReport, out_dir: Path, formats: Iterable[
                     f"{rd.tsql_objects_needs_review} needs review)"
                 )
             lines.append("")
+        if result.effort_summary is not None:
+            es = result.effort_summary
+            lines.append("## Estimated effort")
+            lines.append("")
+            total_days = (
+                f" \u2014 {es.total_p50_days} P50 / {es.total_p90_days} P90 resource-days"
+                if es.total_p50_days is not None and es.total_p90_days is not None
+                else ""
+            )
+            lines.append(
+                f"- **Total:** {es.total_p50_hours:.1f} h P50 / "
+                f"{es.total_p90_hours:.1f} h P90{total_days}"
+            )
+            lines.append(
+                "- *Resource-days = ceil((hours / 8) \u00d7 1.15) \u2014 "
+                "8 h/day plus 15 % spillage.*"
+            )
+            lines.append(f"- **Rate card:** `{es.card_source}` (v{es.card_version})")
+            if es.per_phase:
+                lines.append("- **Per phase:**")
+                for p in es.per_phase:
+                    days_suffix = (
+                        f" \u2014 {p.p50_days}/{p.p90_days} days"
+                        if p.p50_days is not None and p.p90_days is not None
+                        else ""
+                    )
+                    lines.append(
+                        f"    - `{p.phase}`: {p.p50_hours:.1f} h P50 / "
+                        f"{p.p90_hours:.1f} h P90 ({p.step_count} steps)"
+                        f"{days_suffix}"
+                    )
+            lines.append("")
         if result.recommendations:
             lines.append("## Recommendations")
             lines.append("")

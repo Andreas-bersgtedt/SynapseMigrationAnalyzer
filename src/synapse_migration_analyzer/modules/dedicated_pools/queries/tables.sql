@@ -69,4 +69,5 @@ LEFT JOIN dist d     ON d.object_id = t.object_id
 LEFT JOIN size_agg sa ON sa.object_id = t.object_id
 LEFT JOIN part_agg p  ON p.object_id  = t.object_id
 LEFT JOIN idx_type it ON it.object_id = t.object_id
-ORDER BY s.name, t.name;
+ORDER BY s.name, t.name
+OPTION (LABEL = 'sma:tables');

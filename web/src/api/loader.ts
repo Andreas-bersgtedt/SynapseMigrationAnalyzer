@@ -391,6 +391,107 @@ export async function apiValidateConfig(opts: { live?: boolean } = {}): Promise<
   return r.json() as Promise<ValidateResponse>;
 }
 
+// ---------------------------------------------------------------------------
+// Effort card (v2.10) — configurable rate card for migration effort estimates.
+// ---------------------------------------------------------------------------
+
+export interface EffortCardResponse {
+  source: string;            // "default" or absolute path
+  card: Record<string, unknown>;
+  available_rule_keys: string[];
+  available_phase_keys: string[];
+  is_default: boolean;
+}
+
+export async function apiGetEffortCard(): Promise<EffortCardResponse> {
+  const r = await fetch("/api/effort-card");
+  if (!r.ok) throw new Error(`GET /api/effort-card: HTTP ${r.status}`);
+  return r.json() as Promise<EffortCardResponse>;
+}
+
+export async function apiPutEffortCard(card: Record<string, unknown>): Promise<{ saved_to: string; source: string }> {
+  const r = await fetch("/api/effort-card", {
+    method: "PUT",
+    headers: API_HEADERS,
+    body: JSON.stringify({ card }),
+  });
+  if (!r.ok) {
+    const detail = await r.text();
+    throw new Error(`PUT /api/effort-card ${r.status}: ${detail}`);
+  }
+  return r.json();
+}
+
+export async function apiResetEffortCard(): Promise<{ saved_to: string; source: string }> {
+  const r = await fetch("/api/effort-card", { method: "DELETE", headers: API_HEADERS });
+  if (!r.ok) {
+    const detail = await r.text();
+    throw new Error(`DELETE /api/effort-card ${r.status}: ${detail}`);
+  }
+  return r.json();
+}
+
+// ---------------------------------------------------------------------------
+// Runs archive (v2.11) — backup / restore all run data as a zip.
+// ---------------------------------------------------------------------------
+
+export type RunsImportMode = "skip_existing" | "overwrite" | "rename";
+
+export interface RunsImportResult {
+  imported: string[];
+  skipped: string[];
+  renamed: Record<string, string>;
+  warnings: string[];
+}
+
+/** Download a zip of every run under the server's `runs_dir`.
+ *
+ * The browser save dialog is triggered by a temporary anchor element.
+ * Secrets in `.env` live outside `runs_dir` so they are never included.
+ */
+export async function apiExportRunsArchive(opts: { includeEvents?: boolean } = {}): Promise<void> {
+  const qs = opts.includeEvents === false ? "?include_events=false" : "";
+  const r = await fetch(`/api/runs-archive/export${qs}`);
+  if (!r.ok) {
+    const detail = await r.text();
+    throw new Error(`GET /api/runs-archive/export ${r.status}: ${detail}`);
+  }
+  const blob = await r.blob();
+  // Honour the server's filename if present.
+  let filename = "sma-runs.zip";
+  const cd = r.headers.get("content-disposition") ?? "";
+  const m = /filename="([^"]+)"/.exec(cd);
+  if (m) filename = m[1];
+
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+export async function apiImportRunsArchive(
+  file: File,
+  mode: RunsImportMode = "skip_existing",
+): Promise<RunsImportResult> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("mode", mode);
+  const r = await fetch("/api/runs-archive/import", {
+    method: "POST",
+    headers: { "X-SMA-API": "1" }, // do NOT set Content-Type — let the browser set the multipart boundary
+    body: form,
+  });
+  if (!r.ok) {
+    const detail = await r.text();
+    throw new Error(`POST /api/runs-archive/import ${r.status}: ${detail}`);
+  }
+  return r.json() as Promise<RunsImportResult>;
+}
+
 export async function apiGetDiff(runId: string, base?: string): Promise<unknown> {
   const qs = base ? `?base=${encodeURIComponent(base)}` : "";
   const r = await fetch(`/api/runs/${encodeURIComponent(runId)}/diff${qs}`);

@@ -36,4 +36,5 @@ JOIN sys.tables        t  ON t.object_id = st.object_id
 JOIN sys.schemas       s  ON s.schema_id = t.schema_id
 CROSS APPLY sys.dm_db_stats_properties(st.object_id, st.stats_id) sp
 WHERE sp.rows IS NOT NULL AND sp.rows > 0
-ORDER BY s.name, t.name, c.column_id;
+ORDER BY s.name, t.name, c.column_id
+OPTION (LABEL = 'sma:column_stats');

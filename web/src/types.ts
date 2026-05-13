@@ -67,6 +67,37 @@ export interface RunbookStep {
   target?: string | null;
   rollback?: string | null;
   source_recommendation_id?: string | null;
+  // v2.10 — effort estimator output. Older artefacts will be missing
+  // these fields (the SPA falls back to the qualitative ``effort`` label).
+  effort_hours_p50?: number | null;
+  effort_hours_p90?: number | null;
+  effort_breakdown?: {
+    area?: string | null;
+    components?: string[];
+    area_total_hours?: number;
+    phase_share_hours?: number;
+    fallback_used?: boolean;
+    capped?: boolean;
+  } | null;
+}
+
+export interface PhaseEffortSummary {
+  phase: string;
+  p50_hours: number;
+  p90_hours: number;
+  step_count: number;
+  p50_days?: number | null;
+  p90_days?: number | null;
+}
+
+export interface EffortSummary {
+  total_p50_hours: number;
+  total_p90_hours: number;
+  total_p50_days?: number | null;
+  total_p90_days?: number | null;
+  per_phase: PhaseEffortSummary[];
+  card_source: string;
+  card_version: number;
 }
 
 export interface ModuleSummary {
@@ -84,6 +115,7 @@ export interface FabricMappingReport {
   readiness?: ReadinessSummary | null;
   runbook: RunbookStep[];
   capacity_projection?: CapacityProjection | null;
+  effort_summary?: EffortSummary | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -646,6 +678,10 @@ export interface EstateWorkspace {
   fabric_estimated_monthly_cost: number | null;
   fabric_cost_delta_abs: number | null;
   fabric_cost_delta_pct: number | null;
+  effort_hours_p50: number | null;
+  effort_hours_p90: number | null;
+  effort_days_p50: number | null;
+  effort_days_p90: number | null;
   history: EstateHistoryPoint[];
 }
 
@@ -662,6 +698,10 @@ export interface EstateTotals {
   projected_fabric_cu_total: number | null;
   actual_monthly_cost_total: number | null;
   fabric_estimated_monthly_cost_total: number | null;
+  effort_hours_p50_total: number | null;
+  effort_hours_p90_total: number | null;
+  effort_days_p50_total: number | null;
+  effort_days_p90_total: number | null;
 }
 
 export interface EstateTopBlocker {

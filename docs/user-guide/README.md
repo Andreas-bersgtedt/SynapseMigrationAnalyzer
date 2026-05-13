@@ -61,6 +61,9 @@ self-contained.
 - [13. Troubleshooting](13-troubleshooting.md)
 - [14. Security posture](14-security.md)
 - [15. FAQ](15-faq.md)
+- [17. Tool access & security implications](17-access-and-security.md)
+- [18. Cost of running the analyzer](18-cost.md)
+- [19. Effort estimates & rate card](19-effort.md)
 
 ## Conventions used in this guide
 

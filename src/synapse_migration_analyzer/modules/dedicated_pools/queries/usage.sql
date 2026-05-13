@@ -36,4 +36,5 @@ SELECT metric, value, unit, captured_at FROM (
            SYSUTCDATETIME()
     FROM sys.dm_pdw_exec_sessions
     WHERE status = 'Active'
-) m;
+) m
+OPTION (LABEL = 'sma:usage');

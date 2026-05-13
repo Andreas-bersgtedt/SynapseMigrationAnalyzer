@@ -1,10 +1,18 @@
 import { useEffect, useState } from "react";
 import HelpLink from "../components/HelpLink";
 import {
+  apiExportRunsArchive,
   apiGetConfig,
+  apiGetEffortCard,
+  apiImportRunsArchive,
   apiPutConfig,
+  apiPutEffortCard,
+  apiResetEffortCard,
   apiValidateConfig,
   type AppConfig,
+  type EffortCardResponse,
+  type RunsImportMode,
+  type RunsImportResult,
   type ValidateResponse,
   type WorkspaceSummary,
 } from "../api/loader";
@@ -112,8 +120,9 @@ export default function Configuration(): JSX.Element {
     <section className="page">
       <h1>Configuration <HelpLink slug="12-configuration" /></h1>
       <p className="muted">
-        Reads / writes <code>{cfg.env_file}</code>. The client secret is never
-        returned by the API; only its presence (<code>{cfg.azure.client_secret}</code>) is shown.
+        Edit the connection settings persisted to <code>{cfg.env_file}</code>.
+        The client secret is never returned by the API — its current status is
+        shown as <code>{cfg.azure.client_secret}</code> (<em>set</em> or <em>unset</em>).
       </p>
 
       <div className="form-grid">
@@ -245,13 +254,13 @@ export default function Configuration(): JSX.Element {
 
       <div className="actions">
         <button onClick={onSave} disabled={saving}>
-          {saving ? "Saving…" : "Save"}
+          {saving ? "Saving…" : "Save configuration"}
         </button>
-        <button onClick={() => onValidate(false)} disabled={validating}>
-          {validating ? "Validating…" : "Validate (fields)"}
+        <button onClick={() => onValidate(false)} disabled={validating} title="Local checks only: env vars present, GUIDs well-formed, output directory writable">
+          {validating ? "Validating…" : "Validate fields"}
         </button>
-        <button onClick={() => onValidate(true)} disabled={validating} title="Test live Azure + Synapse connectivity using the saved service principal">
-          {validating ? "Testing…" : "Validate access (live)"}
+        <button onClick={() => onValidate(true)} disabled={validating} title="Field checks plus live Azure + Synapse connectivity using the saved service principal">
+          {validating ? "Testing…" : "Validate live access"}
         </button>
         {saveMsg && <span className="muted">{saveMsg}</span>}
       </div>
@@ -261,7 +270,7 @@ export default function Configuration(): JSX.Element {
           <div className="label">
             Validation —{" "}
             <span className={`pill ${validation.ok ? "ok" : "err"}`}>
-              {validation.ok ? "ALL OK" : "FAILED"}
+              {validation.ok ? "All OK" : "Failed"}
             </span>
           </div>
           {(() => {
@@ -278,7 +287,7 @@ export default function Configuration(): JSX.Element {
                 <ul>
                   {items.map((c) => (
                     <li key={c.name}>
-                      <span className={`pill ${c.ok ? "ok" : "err"}`}>{c.ok ? "OK" : "FAIL"}</span>{" "}
+                      <span className={`pill ${c.ok ? "ok" : "err"}`}>{c.ok ? "OK" : "Fail"}</span>{" "}
                       <code>{c.name}</code>
                       {c.detail && <span className="muted"> — {c.detail}</span>}
                     </li>
@@ -297,6 +306,481 @@ export default function Configuration(): JSX.Element {
           )}
         </div>
       )}
+
+      <EffortCardEditor />
+      <RunsBackupRestore />
     </section>
+  );
+}
+
+/**
+ * Collapsible **webform** editor for the configurable effort-rate card.
+ *
+ * Lives behind a `<details>` so the Configuration page stays clean for
+ * the 99 % of users who never touch it. When opened it fetches the
+ * *effective* card (defaults merged with any override on disk) and
+ * renders it as labelled number inputs grouped into General /
+ * Qualitative fallback / Phase base hours / Rules — consistent with
+ * the rest of the Configuration page (no raw JSON). Save PUTs to
+ * `/api/effort-card`; Reset DELETEs the override file.
+ */
+type RateCard = {
+  version?: number;
+  team_velocity?: number;
+  confidence_p50_to_p90_multiplier?: number;
+  qualitative?: Record<string, number>;
+  phases?: Record<string, { base_hours?: number }>;
+  rules?: Record<string, Record<string, number>>;
+};
+
+function humanize(key: string): string {
+  return key
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function NumberField({
+  label,
+  value,
+  step = 0.1,
+  min = 0,
+  onChange,
+  hint,
+}: {
+  label: string;
+  value: number | undefined;
+  step?: number;
+  min?: number;
+  onChange: (v: number) => void;
+  hint?: string;
+}): JSX.Element {
+  return (
+    <label
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: "0.5rem",
+        margin: "0.25rem 0",
+      }}
+    >
+      <span style={{ minWidth: 220, fontSize: 13 }}>
+        {label}
+        {hint && (
+          <span className="small muted" style={{ marginLeft: 4 }}>
+            ({hint})
+          </span>
+        )}
+      </span>
+      <input
+        type="number"
+        step={step}
+        min={min}
+        value={value ?? ""}
+        onChange={(e) => {
+          const v = e.target.value;
+          onChange(v === "" ? 0 : Number(v));
+        }}
+        style={{ width: 110, padding: "2px 6px", fontSize: 13 }}
+      />
+    </label>
+  );
+}
+
+function EffortCardEditor(): JSX.Element {
+  const [info, setInfo] = useState<EffortCardResponse | null>(null);
+  const [card, setCard] = useState<RateCard | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+
+  const load = async () => {
+    try {
+      const r = await apiGetEffortCard();
+      setInfo(r);
+      setCard(r.card as RateCard);
+    } catch (e) {
+      setMsg(`Load failed: ${(e as Error).message}`);
+    } finally {
+      setLoaded(true);
+    }
+  };
+
+  const onToggle = (e: React.SyntheticEvent<HTMLDetailsElement>) => {
+    if (e.currentTarget.open && !loaded) load();
+  };
+
+  const onSave = async () => {
+    if (!card) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      const r = await apiPutEffortCard(card as Record<string, unknown>);
+      setMsg(`Saved to ${r.saved_to}`);
+      await load();
+    } catch (e) {
+      setMsg(`Error: ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onReset = async () => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      await apiResetEffortCard();
+      setMsg("Override removed — shipped defaults are now in effect.");
+      await load();
+    } catch (e) {
+      setMsg(`Error: ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const setTop = <K extends keyof RateCard>(k: K, v: RateCard[K]) => {
+    if (!card) return;
+    setCard({ ...card, [k]: v });
+  };
+
+  const setQual = (key: string, v: number) => {
+    if (!card) return;
+    setCard({
+      ...card,
+      qualitative: { ...(card.qualitative ?? {}), [key]: v },
+    });
+  };
+
+  const setPhase = (phase: string, v: number) => {
+    if (!card) return;
+    setCard({
+      ...card,
+      phases: {
+        ...(card.phases ?? {}),
+        [phase]: { ...(card.phases?.[phase] ?? {}), base_hours: v },
+      },
+    });
+  };
+
+  const setRule = (rule: string, unit: string, v: number) => {
+    if (!card) return;
+    setCard({
+      ...card,
+      rules: {
+        ...(card.rules ?? {}),
+        [rule]: { ...(card.rules?.[rule] ?? {}), [unit]: v },
+      },
+    });
+  };
+
+  return (
+    <details
+      onToggle={onToggle}
+      style={{
+        marginTop: "1rem",
+        border: "1px solid var(--border, #ddd)",
+        borderRadius: 6,
+        padding: "0.5rem 0.75rem",
+      }}
+    >
+      <summary style={{ cursor: "pointer", userSelect: "none" }}>
+        Effort card (advanced){" "}
+        <span className="small muted">
+          — tune the hours-per-unit coefficients used by the runbook
+          effort estimator. <HelpLink slug="19-effort" />
+        </span>
+      </summary>
+      <div style={{ marginTop: "0.5rem" }}>
+        {!loaded && <div className="small muted">Loading…</div>}
+        {info && card && (
+          <>
+            <p className="small muted" style={{ marginTop: 0 }}>
+              Current source:{" "}
+              {info.is_default ? (
+                <span className="pill info">shipped default</span>
+              ) : (
+                <code>{info.source}</code>
+              )}
+              . Version {card.version ?? 1}. Edits are validated against
+              the same Pydantic model the analyzer uses.
+            </p>
+
+            <fieldset style={{ border: "1px solid var(--border, #eee)", borderRadius: 4, padding: "0.5rem 0.75rem", marginTop: "0.5rem" }}>
+              <legend className="small">General</legend>
+              <NumberField
+                label="Team velocity"
+                value={card.team_velocity}
+                step={0.1}
+                hint="1.0 = default speed; 2.0 = twice as fast"
+                onChange={(v) => setTop("team_velocity", v)}
+              />
+              <NumberField
+                label="P90 multiplier"
+                value={card.confidence_p50_to_p90_multiplier}
+                step={0.1}
+                hint="P90 = P50 × this"
+                onChange={(v) => setTop("confidence_p50_to_p90_multiplier", v)}
+              />
+            </fieldset>
+
+            <fieldset style={{ border: "1px solid var(--border, #eee)", borderRadius: 4, padding: "0.5rem 0.75rem", marginTop: "0.5rem" }}>
+              <legend className="small">
+                Qualitative fallback (hours when no rule matches)
+              </legend>
+              {(["low", "medium", "high"] as const).map((k) => (
+                <NumberField
+                  key={k}
+                  label={humanize(k)}
+                  value={card.qualitative?.[k]}
+                  step={0.5}
+                  onChange={(v) => setQual(k, v)}
+                />
+              ))}
+            </fieldset>
+
+            <fieldset style={{ border: "1px solid var(--border, #eee)", borderRadius: 4, padding: "0.5rem 0.75rem", marginTop: "0.5rem" }}>
+              <legend className="small">
+                Phase base hours (fixed overhead per phase)
+              </legend>
+              {Object.keys(card.phases ?? {}).map((phase) => (
+                <NumberField
+                  key={phase}
+                  label={humanize(phase)}
+                  value={card.phases?.[phase]?.base_hours}
+                  step={1}
+                  onChange={(v) => setPhase(phase, v)}
+                />
+              ))}
+            </fieldset>
+
+            <fieldset style={{ border: "1px solid var(--border, #eee)", borderRadius: 4, padding: "0.5rem 0.75rem", marginTop: "0.5rem" }}>
+              <legend className="small">
+                Rules (hours per unit, capped where applicable)
+              </legend>
+              {Object.keys(card.rules ?? {}).map((rule) => {
+                const coeffs = card.rules?.[rule] ?? {};
+                return (
+                  <div
+                    key={rule}
+                    style={{
+                      borderTop: "1px dashed var(--border, #eee)",
+                      paddingTop: "0.4rem",
+                      marginTop: "0.4rem",
+                    }}
+                  >
+                    <div style={{ fontWeight: 600, fontSize: 13 }}>
+                      <code>{rule}</code>
+                    </div>
+                    {Object.keys(coeffs).map((unit) => (
+                      <NumberField
+                        key={unit}
+                        label={humanize(unit)}
+                        value={coeffs[unit]}
+                        step={unit === "cap_hours" ? 5 : 0.25}
+                        onChange={(v) => setRule(rule, unit, v)}
+                      />
+                    ))}
+                  </div>
+                );
+              })}
+            </fieldset>
+
+            <div className="actions" style={{ marginTop: "0.75rem" }}>
+              <button onClick={onSave} disabled={busy}>
+                {busy ? "Saving…" : "Save effort card"}
+              </button>
+              <button
+                onClick={onReset}
+                disabled={busy || info.is_default}
+                title={
+                  info.is_default
+                    ? "Already using shipped defaults"
+                    : "Delete the override file"
+                }
+              >
+                Reset to shipped defaults
+              </button>
+              {msg && <span className="muted small">{msg}</span>}
+            </div>
+
+            {info.available_rule_keys.length > 0 && (
+              <details style={{ marginTop: "0.5rem" }}>
+                <summary className="small muted">
+                  Recognised rule keys ({info.available_rule_keys.length})
+                </summary>
+                <ul className="small">
+                  {info.available_rule_keys.map((k) => (
+                    <li key={k}><code>{k}</code></li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </>
+        )}
+      </div>
+    </details>
+  );
+}
+
+
+/**
+ * Collapsible **Backup & restore** panel.
+ *
+ * Lets the user download every run under the server's `runs_dir` as a
+ * single zip, and re-import a previously exported zip. Secrets in
+ * `.env` are never included � the archiver only walks `runs_dir` and
+ * also drops dotfiles defensively. The import flow validates the zip
+ * before extracting and supports three conflict policies.
+ */
+function RunsBackupRestore(): JSX.Element {
+  const [busy, setBusy] = useState<"export" | "import" | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [file, setFile] = useState<File | null>(null);
+  const [mode, setMode] = useState<RunsImportMode>("skip_existing");
+  const [result, setResult] = useState<RunsImportResult | null>(null);
+
+  const onExport = async () => {
+    setBusy("export");
+    setError(null);
+    setMsg(null);
+    try {
+      await apiExportRunsArchive();
+      setMsg("Download started.");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const onImport = async () => {
+    if (!file) return;
+    setBusy("import");
+    setError(null);
+    setMsg(null);
+    setResult(null);
+    try {
+      const r = await apiImportRunsArchive(file, mode);
+      setResult(r);
+      const parts: string[] = [];
+      if (r.imported.length) parts.push(`${r.imported.length} imported`);
+      if (r.skipped.length) parts.push(`${r.skipped.length} skipped`);
+      const renamedCount = Object.keys(r.renamed).length;
+      if (renamedCount) parts.push(`${renamedCount} renamed`);
+      setMsg(parts.length ? parts.join(", ") : "Nothing to import.");
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <details className="card" style={{ marginTop: "1rem" }}>
+      <summary style={{ cursor: "pointer", fontWeight: 600 }}>
+        Backup &amp; restore <span className="muted small">(export / import all run data)</span>
+      </summary>
+      <div style={{ marginTop: "0.75rem" }}>
+        <p className="small muted" style={{ marginTop: 0 }}>
+          Download every run under <code>runs/</code> as a single zip, or restore
+          one on another machine. The export <strong>never includes</strong>{" "}
+          <code>.env</code> or other secrets � only run artefacts.
+        </p>
+
+        <div className="actions" style={{ gap: 8, flexWrap: "wrap" }}>
+          <button onClick={onExport} disabled={busy !== null}>
+            {busy === "export" ? "Preparing�" : "Download all run data (.zip)"}
+          </button>
+        </div>
+
+        <div
+          className="form-grid"
+          style={{ marginTop: "0.75rem", alignItems: "end" }}
+        >
+          <label>
+            <span>Import zip file</span>
+            <input
+              type="file"
+              accept=".zip,application/zip"
+              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+            />
+          </label>
+          <label>
+            <span>On conflict</span>
+            <select
+              value={mode}
+              onChange={(e) => setMode(e.target.value as RunsImportMode)}
+            >
+              <option value="skip_existing">Skip existing</option>
+              <option value="overwrite">Overwrite</option>
+              <option value="rename">Rename incoming run</option>
+            </select>
+          </label>
+          <button
+            onClick={onImport}
+            disabled={busy !== null || file === null}
+            style={{ alignSelf: "end" }}
+          >
+            {busy === "import" ? "Importing�" : "Import"}
+          </button>
+        </div>
+
+        {msg && (
+          <p className="small" style={{ marginTop: "0.5rem" }}>
+            {msg}
+          </p>
+        )}
+        {error && (
+          <p className="small" style={{ marginTop: "0.5rem", color: "var(--err, #c33)" }}>
+            {error}
+          </p>
+        )}
+        {result && (result.imported.length > 0 || Object.keys(result.renamed).length > 0) && (
+          <details className="small" style={{ marginTop: "0.5rem" }}>
+            <summary>Import details</summary>
+            {result.imported.length > 0 && (
+              <div>
+                <strong>Imported:</strong>
+                <ul>
+                  {result.imported.map((id) => (
+                    <li key={id}><code>{id}</code></li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {Object.keys(result.renamed).length > 0 && (
+              <div>
+                <strong>Renamed:</strong>
+                <ul>
+                  {Object.entries(result.renamed).map(([oldId, newId]) => (
+                    <li key={oldId}>
+                      <code>{oldId}</code> ? <code>{newId}</code>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {result.warnings.length > 0 && (
+              <div>
+                <strong>Warnings:</strong>
+                <ul>
+                  {result.warnings.map((w, i) => (
+                    <li key={i}>{w}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </details>
+        )}
+
+        <p className="small muted" style={{ marginTop: "0.75rem" }}>
+          The archive contains <code>manifest.json</code> plus{" "}
+          <code>runs/&lt;id&gt;/</code> trees only. Dotfiles and symlinks are
+          dropped on export and rejected on import; path-traversal and
+          zip-bomb entries are blocked.
+        </p>
+      </div>
+    </details>
   );
 }

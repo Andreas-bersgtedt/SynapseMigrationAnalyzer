@@ -51,6 +51,39 @@ class RunbookStep(BaseModel):
     target: str | None = None
     rollback: str | None = None
     source_recommendation_id: str | None = None
+    # v2.10 — effort estimator output. All optional so older artefacts
+    # still deserialise cleanly.
+    effort_hours_p50: float | None = None
+    effort_hours_p90: float | None = None
+    effort_breakdown: dict[str, Any] | None = None
+
+
+class PhaseEffortSummary(BaseModel):
+    phase: str
+    p50_hours: float
+    p90_hours: float
+    step_count: int
+    # Resource-days, computed as ceil((hours / 8) * 1.15) — 8 h/day,
+    # 15 % spillage. Optional on older artefacts.
+    p50_days: int | None = None
+    p90_days: int | None = None
+
+
+class EffortSummary(BaseModel):
+    """Project-level rollup produced by the configurable rate card.
+
+    ``card_source`` is the string ``"default"`` when the shipped defaults
+    were used, or the absolute path of the override file otherwise.
+    """
+    total_p50_hours: float = 0.0
+    total_p90_hours: float = 0.0
+    # Resource-days, computed as ceil((hours / 8) * 1.15) — 8 h/day,
+    # 15 % spillage. Optional on older artefacts.
+    total_p50_days: int | None = None
+    total_p90_days: int | None = None
+    per_phase: list[PhaseEffortSummary] = Field(default_factory=list)
+    card_source: str = "default"
+    card_version: int = 1
 
 
 class CapacityProjection(BaseModel):
@@ -83,6 +116,8 @@ class FabricMappingReport(BaseModel):
     readiness: ReadinessSummary | None = None
     runbook: list[RunbookStep] = Field(default_factory=list)
     capacity_projection: CapacityProjection | None = None
+    # v2.10 — configurable effort estimator output.
+    effort_summary: EffortSummary | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return self.model_dump(mode="json")

@@ -12,8 +12,11 @@ from rich.console import Console
 from rich.logging import RichHandler
 
 from . import __version__
+from .access_manifest import render_markdown as render_access_markdown
 from .config import load_config
 from .doctor import render_report, run_checks
+from .effort import default_card, dump_card, load_card
+from .effort.rate_card import RateCard
 from .modules.cost.analyzer import CostAnalyzer
 from .modules.cost.reporting import write_reports as write_cost_reports
 from .modules.dedicated_pools.analyzer import DedicatedPoolsAnalyzer
@@ -109,7 +112,7 @@ def cli(ctx: click.Context, verbose: bool, env_file: Path | None, log_format: st
     # is Click's own cleaned-up view of the dispatch target, so the detection
     # works regardless of whether the user supplied ``-v`` / ``--env-file``
     # before the subcommand name.
-    _NO_CONFIG_SUBCOMMANDS = {"doctor", "export-schema", "serve"}
+    _NO_CONFIG_SUBCOMMANDS = {"doctor", "export-schema", "serve", "access-report", "effort-card"}
     if ctx.invoked_subcommand in _NO_CONFIG_SUBCOMMANDS or ctx.invoked_subcommand is None:
         ctx.obj["config"] = None
         return
@@ -134,6 +137,68 @@ def doctor(ctx: click.Context, offline: bool) -> None:
     render_report(report, console)
     if not report.ok:
         sys.exit(EXIT_DOCTOR_FAILED)
+
+
+@cli.command("access-report")
+@click.option("--out", "-o", "out_path", type=click.Path(dir_okay=False, path_type=Path),
+              default=None,
+              help="Write the Markdown report to this path instead of stdout.")
+@click.pass_context
+def access_report(ctx: click.Context, out_path: Path | None) -> None:
+    """Emit a Markdown report of every Azure / Synapse / SQL surface the analyzer touches.
+
+    Suitable for InfoSec / change-advisory review. Needs no Azure access and reads no
+    workspace state — the manifest is a static, version-stamped description of the
+    analyzer's own RBAC + data-plane footprint.
+    """
+    body = render_access_markdown(__version__)
+    if out_path is None:
+        click.echo(body)
+        return
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(body, encoding="utf-8")
+    _print_paths([out_path])
+
+
+@cli.command("effort-card")
+@click.option("--out", "-o", "out_path",
+              type=click.Path(dir_okay=False, path_type=Path),
+              default=Path("effort-card.json"), show_default=True,
+              help="Write the shipped default rate card to this path. "
+                   "Edit the resulting JSON to tune effort estimates, then "
+                   "pass it back with --effort-card or via SMA_EFFORT_CARD.")
+@click.pass_context
+def effort_card(ctx: click.Context, out_path: Path) -> None:
+    """Export the shipped default effort-card JSON so customers can tune it.
+
+    The card governs the configurable hours-per-unit coefficients used by
+    the runbook effort estimator. The shipped defaults are conservative
+    middle-of-the-road numbers; customers should adjust ``team_velocity``
+    and the per-rule unit hours to match their delivery actuals.
+    """
+    dump_card(default_card(), out_path)
+    _print_paths([out_path])
+
+
+def _resolve_effort_card(card_path: Path | None) -> tuple[RateCard, str]:
+    """Resolve the rate card from a CLI flag / env var / repo default.
+
+    Returns ``(card, source)`` where ``source`` is the absolute path string
+    that produced the override, or the literal ``"default"`` when the
+    shipped defaults were used.
+    """
+    if card_path is not None:
+        card = load_card(card_path)
+        return card, str(card_path.resolve())
+    env = os.environ.get("SMA_EFFORT_CARD")
+    if env:
+        card = load_card(env)
+        return card, str(Path(env).resolve())
+    discovered = Path("effort-card.json")
+    if discovered.is_file():
+        card = load_card(discovered)
+        return card, str(discovered.resolve())
+    return default_card(), "default"
 
 
 @cli.command("analyze-dedicated-pools")
@@ -234,11 +299,25 @@ def analyze_monitoring(ctx: click.Context, formats: tuple[str, ...], since: str 
 @click.option("--formats", "-f", multiple=True,
               type=click.Choice(["json", "csv", "markdown", "html"], case_sensitive=False),
               default=_ALL_FORMATS, help="Report formats to emit.")
+@click.option("--effort-card", "effort_card_path",
+              type=click.Path(dir_okay=False, exists=True, path_type=Path),
+              default=None,
+              help="Override the effort-rate-card JSON used to estimate "
+                   "per-step person-hours. Defaults to ./effort-card.json "
+                   "if present, otherwise the shipped defaults. Generate "
+                   "a starter file with `sma effort-card`.")
 @click.pass_context
-def map_to_fabric(ctx: click.Context, formats: tuple[str, ...]) -> None:
+def map_to_fabric(
+    ctx: click.Context,
+    formats: tuple[str, ...],
+    effort_card_path: Path | None,
+) -> None:
     """Aggregate prior module outputs and produce Fabric Warehouse migration recommendations."""
     cfg = ctx.obj["config"]
-    result = FabricMappingAnalyzer(cfg).run()
+    card, source = _resolve_effort_card(effort_card_path)
+    result = FabricMappingAnalyzer(
+        cfg, effort_card=card, effort_card_source=source,
+    ).run()
     paths = write_fabric_reports(result, cfg.output_dir, formats=[f.lower() for f in formats])
     _print_paths(paths)
 
@@ -342,6 +421,11 @@ def validate_fabric(ctx: click.Context, formats: tuple[str, ...]) -> None:
               help="Run independent modules concurrently (default: 4, override with "
                    "SMA_ANALYZE_PARALLELISM). Set to 1 for fully sequential execution "
                    "and stable log ordering.")
+@click.option("--effort-card", "effort_card_path",
+              type=click.Path(dir_okay=False, exists=True, path_type=Path),
+              default=None,
+              help="Override the effort-rate-card JSON used to estimate "
+                   "per-step person-hours during map-to-fabric.")
 @click.pass_context
 def analyze_all(
     ctx: click.Context,
@@ -350,9 +434,11 @@ def analyze_all(
     with_webui: bool,
     webui_dist: Path | None,
     max_parallel: int | None,
+    effort_card_path: Path | None,
 ) -> None:
     """Run every analyzer (dedicated, serverless, spark, pipelines, monitoring, storage) then map-to-fabric."""
     cfg = ctx.obj["config"]
+    effort_card, effort_card_source = _resolve_effort_card(effort_card_path)
     skipped = {s.lower() for s in skip}
     included = {i.lower() for i in include}
     # Mid-term modules are opt-in: skip them unless --include'd.
@@ -401,7 +487,9 @@ def analyze_all(
         # also enabled it should run AFTER mapping. fabric_mapping reads every
         # other module's JSON, so it MUST be in wave B too.
         ("[7/7] fabric mapping", "fabric_mapping",
-         lambda: write_fabric_reports(FabricMappingAnalyzer(cfg).run(),
+         lambda: write_fabric_reports(FabricMappingAnalyzer(
+             cfg, effort_card=effort_card, effort_card_source=effort_card_source,
+         ).run(),
                                       cfg.output_dir, formats=list(_ALL_FORMATS))),
         ("[+] cost", "cost",
          lambda: write_cost_reports(CostAnalyzer(cfg).run(),

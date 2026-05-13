@@ -6,6 +6,136 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-05-13
+
+### Added
+- **Backup & restore for run data.** New `/api/runs-archive/export` and
+  `/api/runs-archive/import` endpoints and a matching **Backup & restore**
+  panel on the Configuration page let users download every run under
+  `runs/` as a single zip and reimport it on another machine. The
+  archive contains a `manifest.json` plus `runs/<id>/` trees only;
+  `.env` lives outside `runs_dir` and is therefore never included, and
+  the archiver additionally drops dotfiles and refuses to follow
+  symlinks. Imports validate the zip against path-traversal, symlink
+  entries, per-file and total size caps, and zip-bomb compression
+  ratios before extracting each run atomically (write to tempdir →
+  `os.replace`). Three conflict modes are supported: `skip_existing`
+  (default), `overwrite`, and `rename` (assign the incoming run a
+  fresh id and rewrite `run.json`). In-flight runs cannot be
+  overwritten — cancel first.
+- **Resource-days alongside hours in every effort summary.** The
+  Runbook header, per-phase mini-table, the Markdown and HTML reports,
+  the Estate Overview workspace table + totals card, and the CSV
+  export now show `ceil((hours / 8) × 1.15)` (8 working hours per day
+  plus 15 % spillage, rounded up) so plans can be quoted directly in
+  resource-days. New helper `synapse_migration_analyzer.effort.days_from_hours`.
+
+### Changed
+- **Configuration page label polish.** Button labels are now plain
+  sentence case for consistency: **Save** → **Save configuration**,
+  **Validate (fields)** → **Validate fields**, **Validate access (live)**
+  → **Validate live access**. The validation pill reads **All OK** /
+  **Failed** (and per-row **OK** / **Fail**) instead of all-caps. The
+  intro paragraph explains the `.env` path and the client-secret
+  status (*set* / *unset*) instead of dumping a raw status token.
+  The effort-card **Reset to default** button is now **Reset to
+  shipped defaults**.
+
+### Versioning
+- **Major version bump to 3.0.0** to mark the new control-plane
+  capabilities (run-data backup/restore, resource-days estimation,
+  effort rate card webform) that ship together in this release.
+
+## [2.10.0] - 2026-05-14
+
+### Added
+- **Configurable effort estimates / rate card.** Every runbook step now
+  carries a P50 and P90 hour figure derived from a small, fully
+  editable JSON rate card (`effort-card.json`). The estimator groups
+  recommendations by area, sums *coefficient × count* using the same
+  artefacts the other modules already produced (tables, indexes,
+  notebooks, pipelines, linked services, triggers, runtimes, external
+  tables, serverless queries), applies the area cap, splits the area
+  total across the steps in that area, adds the phase's `base_hours`
+  share, divides by `team_velocity`, and derives P90 = P50 ×
+  `confidence_p50_to_p90_multiplier` (default 1.8). Steps that match
+  no rule fall back to the qualitative `low / medium / high` map.
+- **Runbook page in the SPA** — a header summary card with total
+  P50 / P90 plus a per-phase mini-table, two new columns (`P50 (h)` /
+  `P90 (h)`) on every step row with a tooltip showing the component
+  breakdown, and the same breakdown surfaced inside each step's
+  expanded panel (annotated *(capped)* where applicable).
+- **Configuration page in the SPA** — a new default-collapsed
+  **Effort card (advanced)** panel that lazy-loads on toggle, edits
+  the JSON in-place, and exposes Save / Reset to default. The panel
+  stays out of the way for users who don't tune.
+- **CLI surface.** New `sma effort-card` subcommand writes the
+  shipped defaults to a hand-editable file; `sma map-to-fabric` and
+  `sma analyze-all` accept `--effort-card path/to/card.json`; the
+  `SMA_EFFORT_CARD` environment variable is honoured everywhere.
+- **Control-plane API.** `GET / PUT / DELETE /api/effort-card`
+  (CSRF-guarded via `X-SMA-API: 1`) reads and writes
+  `effort-card.json` next to the `.env`, with path-traversal
+  protection.
+- **Reports.** `fabric_mapping.md` and `.html` gain an *Estimated
+  effort* section; `fabric_mapping.json` `runbook[*]` gain
+  `effort_hours_p50`, `effort_hours_p90`, `effort_breakdown`, and a
+  new top-level `effort_summary` object.
+- **User-guide chapter 19 — Effort estimates & rate card**
+  ([`docs/user-guide/19-effort.md`](docs/user-guide/19-effort.md))
+  documents the model, the full schema, the calibration loop, and the
+  three ways to override the defaults. Cross-linked from the SPA Help.
+
+## [2.9.0] - 2026-05-13
+
+### Added
+- **User guide chapter 18 — Cost of running the analyzer**
+  ([`docs/user-guide/18-cost.md`](docs/user-guide/18-cost.md)). Two-part
+  reviewer chapter: (A) Azure consumption SMA itself adds to the bill
+  — essentially zero, because every API SMA calls is in a free tier and
+  the DMV scans run on capacity that is already paid for, with a worked
+  example for a 5-pool weekly cadence (<$3/year); (B) the Fabric cost
+  projection methodology, including the 1 CU = 2 Spark vCores ratio,
+  the DIU/MDF vCore-hour → CU-hour mapping, the DWU → CU lookup, the
+  peak-day-not-weekly-average rule introduced in 2.6.3, F-SKU sizing
+  with configurable headroom (`SMA_FABRIC_HEADROOM`), and an explicit
+  "verify on the pricing page before quoting procurement" caveat.
+  Cross-linked from the SPA Help, the user-guide index, and `README.md`.
+- **`OPTION (LABEL = 'sma:<query>')` on the dedicated-pool DMV scans**
+  (`tables.sql`, `column_stats.sql`, `top_queries.sql`, `usage.sql`)
+  so the analyzer's own activity is auditable in
+  `sys.dm_pdw_exec_requests`. Pool DBAs can now run
+  `SELECT label, COUNT(*) FROM sys.dm_pdw_exec_requests WHERE label
+  LIKE 'sma:%' GROUP BY label;` to see exactly what SMA executed and
+  how much pool time it consumed. `top_consumed_objects.sql` already
+  carried this label (shipped in 2.7.0); the rest now match.
+
+## [2.8.0] - 2026-05-13
+
+### Added
+- **`sma access-report` CLI subcommand.** Emits a Markdown report of
+  every Azure / Synapse / SQL surface the analyzer touches, the RBAC
+  required to make those calls succeed, what ends up in the on-disk
+  output, and what does not leave the host. Needs no Azure access and
+  reads no workspace state — the manifest is a static, version-stamped
+  description of the analyzer's own footprint, suitable for attaching
+  to InfoSec / change-advisory tickets. Output can be redirected with
+  `--out access-report.md`.
+- **User guide chapter 17 — Tool access & security implications**
+  ([`docs/user-guide/17-access-and-security.md`](docs/user-guide/17-access-and-security.md)).
+  Reviewer-oriented walkthrough of the per-module access matrix, the
+  identity model (single SP via `ClientSecretCredential`), what gets
+  written to disk, what counts as sensitive in output (workspace /
+  schema metadata, ~4 KB SQL previews, login names — explicitly no
+  row data and no plaintext secrets), the egress allow-list (per-
+  workspace Azure FQDNs only, no telemetry), secret handling, threat
+  model, and a pre-run reviewer checklist. Bundled into the SPA Help
+  as a hidden-from-pager but routable chapter, and cross-linked from
+  `README.md`, `SECURITY.md`, and `docs/user-guide/README.md`.
+- New `src/synapse_migration_analyzer/access_manifest.py` is the single
+  source of truth shared between the CLI command and the user-guide
+  chapter so the two cannot drift out of sync.
+
 ## [2.7.0] - 2026-05-13
 
 ### Added
