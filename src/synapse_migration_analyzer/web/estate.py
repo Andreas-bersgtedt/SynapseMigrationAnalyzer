@@ -243,7 +243,6 @@ def _extract_run(run_dir: Path) -> dict[str, Any] | None:
 
     readiness = (fm or {}).get("readiness") or {}
     capacity = (fm or {}).get("capacity_projection") or {}
-    counts = readiness.get("counts") or {}
     fabric_cmp = (cost or {}).get("fabric_comparison") or {}
     actual_monthly = None
     if cost:

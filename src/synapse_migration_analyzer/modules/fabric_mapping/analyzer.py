@@ -5,7 +5,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from ...config import AppConfig
 from ...effort import (
@@ -27,6 +27,9 @@ from .models import (
     Recommendation,
     RunbookStep,
 )
+
+if TYPE_CHECKING:
+    from ...progress import ProgressReporter
 
 log = logging.getLogger(__name__)
 

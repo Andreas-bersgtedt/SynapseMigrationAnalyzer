@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any, Iterator, Literal
 
 from azure.synapse.spark import SparkClient

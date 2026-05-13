@@ -5,7 +5,6 @@ import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from typing import Callable
 
 from .models import (
     ExternalDataSource,

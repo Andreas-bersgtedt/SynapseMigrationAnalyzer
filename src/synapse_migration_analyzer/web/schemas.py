@@ -7,15 +7,15 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+# The module names the API accepts. Sourced from the central analyzer
+# registry so adding a new module in :mod:`..modules` automatically
+# propagates here without a parallel edit.
+from ..modules import KNOWN_MODULES as KNOWN_MODULES  # re-exported
+
 ModuleState = Literal[
     "queued", "running", "ok", "failed", "skipped", "cancelled", "carried",
 ]
 RunState = Literal["queued", "running", "ok", "failed", "cancelled"]
-
-# The module names the API accepts. Sourced from the central analyzer
-# registry so adding a new module in :mod:`..modules` automatically
-# propagates here without a parallel edit.
-from ..modules import KNOWN_MODULES  # re-exported below
 
 
 class ModuleProgress(BaseModel):

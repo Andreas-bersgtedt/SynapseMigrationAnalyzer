@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-05-13
+
+### Fixed
+- Ruff release-check failures (F401/F541/F811/F821/F841/E402) across
+  `access_manifest`, `serverless_pools/collectors`, `spark_pools/spark_history_client`,
+  `fabric_mapping/analyzer`, `web/estate`, `web/schemas`, and the test suite.
+
 ## [3.0.0] - 2026-05-13
 
 ### Added

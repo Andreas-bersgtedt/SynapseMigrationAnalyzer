@@ -177,18 +177,3 @@ def test_days_from_hours_uses_8_hours_and_15_pct_spillage() -> None:
     assert days_from_hours(80) == 12
     # any positive sub-day amount rounds up to 1
     assert days_from_hours(0.5) == 1
-
-
-
-def test_days_from_hours_uses_8_hours_and_15_pct_spillage() -> None:
-    assert days_from_hours(None) is None
-    assert days_from_hours(0) == 0
-    # 8 h => (8/8)*1.15 = 1.15 -> ceil -> 2 days
-    assert days_from_hours(8) == 2
-    # 16 h => 2.3 -> 3 days
-    assert days_from_hours(16) == 3
-    # 80 h => 11.5 -> 12 days
-    assert days_from_hours(80) == 12
-    # any positive sub-day amount rounds up to 1
-    assert days_from_hours(0.5) == 1
-
