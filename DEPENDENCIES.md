@@ -23,6 +23,7 @@ Declared under `[project].dependencies` in [pyproject.toml](pyproject.toml).
 | [azure-mgmt-monitor](https://pypi.org/project/azure-mgmt-monitor/) | `>=6.0.2` | Azure Monitor metrics for the `monitoring` and `storage` modules. | MIT | https://github.com/Azure/azure-sdk-for-python |
 | [azure-mgmt-storage](https://pypi.org/project/azure-mgmt-storage/) | `>=21.1.0` | ADLS Gen2 / Storage account inventory for the `storage` module. | MIT | https://github.com/Azure/azure-sdk-for-python |
 | [azure-synapse-artifacts](https://pypi.org/project/azure-synapse-artifacts/) | `>=0.20` | Pipelines, notebooks, and Spark Job Definition inventory. | MIT | https://github.com/Azure/azure-sdk-for-python |
+| [azure-synapse-spark](https://pypi.org/project/azure-synapse-spark/) | `>=0.7` | Spark Livy job-history collection (interactive sessions + scheduled batches) used by the `spark_pools` module. | MIT | https://github.com/Azure/azure-sdk-for-python |
 | [pyodbc](https://pypi.org/project/pyodbc/) | `>=5.1` | DMV-driven SQL collection for dedicated and serverless SQL pools. Requires the **Microsoft ODBC Driver 18 for SQL Server** (see below). | MIT-0 | https://github.com/mkleehammer/pyodbc |
 | [pydantic](https://pypi.org/project/pydantic/) | `>=2.7` | Typed models in every module's `models.py`. | MIT | https://github.com/pydantic/pydantic |
 | [rich](https://pypi.org/project/rich/) | `>=13.7` | Console output (progress, tables) used by the CLI. | MIT | https://github.com/Textualize/rich |

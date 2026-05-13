@@ -296,9 +296,10 @@ New modules and integrations once the core depth is in place.
 
 Ideas that need design work or external dependencies.
 
-- **Fabric-side validation** — optional post-migration runner that connects to a target
-  Fabric Warehouse / Lakehouse and verifies object counts, row counts, collation, and a
-  sample of T-SQL surface findings actually resolved.
+> **Fabric-side validation** shipped in v1.2 as the `fabric_validation` module
+> (`sma validate-fabric`, opt-in / experimental). The bullet was removed from
+> this section once it had a working implementation.
+
 - **Code conversion assist** — automated rewrite hints for the T-SQL surface gaps
   detected today (surrogate keys via `IDENTITY` → Fabric pattern, `MERGE` simplifications,
   unsupported hints, etc.). Suggestions only — never silent rewrites of customer code.

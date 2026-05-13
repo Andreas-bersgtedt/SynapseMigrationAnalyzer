@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, NavLink, Route, Routes } from "react-router-dom";
-import { detectMode, type ApiMode } from "./api/loader";
+import { detectAvailableModules, detectMode, type ApiMode } from "./api/loader";
 import { RunPicker } from "./components/RunPicker";
 import CodeObjects from "./pages/CodeObjects";
 import Configuration from "./pages/Configuration";
@@ -18,27 +18,54 @@ import Runbook from "./pages/Runbook";
 import RunsHistory from "./pages/RunsHistory";
 import Security from "./pages/Security";
 
-const STATIC_NAV = [
+type NavEntry = {
+  to: string;
+  label: string;
+  end?: boolean;
+  /**
+   * Module slug that must have produced data for this tab to be useful.
+   * When omitted the tab is always shown (e.g. Dashboard, Help, control-
+   * plane operational tabs like Run/Runs/Configuration).
+   */
+  requires?: string;
+  /**
+   * Any-of variant: tab is visible if at least one of the listed module
+   * slugs is available. Used for tabs that aggregate multiple modules
+   * (e.g. SQL Surface = dedicated pool code objects + serverless top
+   * queries).
+   */
+  requiresAny?: readonly string[];
+};
+
+const STATIC_NAV: NavEntry[] = [
   { to: "/", label: "Dashboard", end: true },
-  { to: "/code-objects", label: "Code objects" },
-  { to: "/recommendations", label: "Recommendations" },
-  { to: "/runbook", label: "Runbook" },
-  { to: "/delta", label: "Delta" },
-  { to: "/cost", label: "Cost" },
-  { to: "/governance", label: "Governance" },
-  { to: "/security", label: "Security" },
+  {
+    to: "/code-objects",
+    label: "SQL Surface",
+    requiresAny: ["dedicated_pools", "serverless_pools"],
+  },
+  { to: "/recommendations", label: "Recommendations", requires: "fabric_mapping" },
+  { to: "/runbook", label: "Runbook", requires: "fabric_mapping" },
+  { to: "/delta", label: "Delta", requires: "run_delta" },
+  { to: "/cost", label: "Cost", requires: "cost" },
+  { to: "/governance", label: "Governance", requires: "governance" },
+  { to: "/security", label: "Security", requires: "security" },
   { to: "/help", label: "Help" },
 ];
 
-const CONTROL_PLANE_NAV = [
+const CONTROL_PLANE_NAV: NavEntry[] = [
   { to: "/", label: "Overview", end: true },
   { to: "/dashboard", label: "Dashboard" },
-  { to: "/code-objects", label: "Code objects" },
-  { to: "/recommendations", label: "Recommendations" },
-  { to: "/runbook", label: "Runbook" },
-  { to: "/cost", label: "Cost" },
-  { to: "/governance", label: "Governance" },
-  { to: "/security", label: "Security" },
+  {
+    to: "/code-objects",
+    label: "SQL Surface",
+    requiresAny: ["dedicated_pools", "serverless_pools"],
+  },
+  { to: "/recommendations", label: "Recommendations", requires: "fabric_mapping" },
+  { to: "/runbook", label: "Runbook", requires: "fabric_mapping" },
+  { to: "/cost", label: "Cost", requires: "cost" },
+  { to: "/governance", label: "Governance", requires: "governance" },
+  { to: "/security", label: "Security", requires: "security" },
   { to: "/run", label: "Run" },
   { to: "/runs", label: "Runs" },
   { to: "/diff", label: "Diff" },
@@ -48,12 +75,26 @@ const CONTROL_PLANE_NAV = [
 
 export default function App() {
   const [mode, setMode] = useState<ApiMode | null>(null);
+  const [available, setAvailable] = useState<Set<string> | null>(null);
 
   useEffect(() => {
     detectMode().then(setMode).catch(() => setMode("static"));
+    detectAvailableModules()
+      .then(setAvailable)
+      .catch(() => setAvailable(new Set()));
   }, []);
 
-  const nav = mode === "control-plane" ? CONTROL_PLANE_NAV : STATIC_NAV;
+  const baseNav = mode === "control-plane" ? CONTROL_PLANE_NAV : STATIC_NAV;
+  // Until the availability probe finishes, render the full nav so the
+  // first paint doesn't flash a stripped-down menu. Once we know which
+  // modules produced data, hide tabs whose required module is absent.
+  const nav = available
+    ? baseNav.filter((n) => {
+        if (n.requires && !available.has(n.requires)) return false;
+        if (n.requiresAny && !n.requiresAny.some((m) => available.has(m))) return false;
+        return true;
+      })
+    : baseNav;
 
   return (
     <div className="layout">

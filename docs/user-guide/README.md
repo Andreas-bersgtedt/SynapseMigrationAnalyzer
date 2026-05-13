@@ -46,7 +46,7 @@ self-contained.
 - [05. Code objects](05-code-objects.md)
 - [06. Recommendations](06-recommendations.md)
 - [07. Runbook](07-runbook.md)
-- [08. Delta](08-delta.md)
+- [08. Delta](08-delta.md) (static mode only — replaced by *Diff* in control-plane mode)
 
 ### Pages — control plane only
 
@@ -73,6 +73,13 @@ self-contained.
 
 ## Versioning
 
-This guide is written for **Synapse Migration Analyzer 2.2.2**. Changes
-to navigation, pages or fields will be reflected here in lock-step with
-[CHANGELOG.md](../../CHANGELOG.md).
+This guide tracks the current release of **Synapse Migration Analyzer**
+(see [CHANGELOG.md](../../CHANGELOG.md) for the exact version). Changes
+to navigation, pages or fields are reflected here in lock-step with the
+changelog.
+
+> The SPA also surfaces additional pages — **Cost**, **Governance**,
+> **Security**, **Help** (both modes) and **Overview** (control-plane
+> only) — that are not yet covered chapter-by-chapter in this guide.
+> Each of those pages renders the corresponding module's JSON directly
+> and links back to its module HTML report under `./output/`.

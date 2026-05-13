@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import {
   createColumnHelper,
   flexRender,
@@ -8,11 +8,17 @@ import {
   useReactTable,
   type SortingState,
 } from "@tanstack/react-table";
-import { loadDedicatedPools } from "../api/loader";
+import { loadDedicatedPools, loadServerless } from "../api/loader";
 import { useAsync } from "../hooks/useAsync";
 import { Empty, SeverityPill } from "../components/Atoms";
 import HelpLink from "../components/HelpLink";
-import type { CodeObject, TsqlSurfaceGap } from "../types";
+import { ServerlessTopQueriesTable } from "../components/ServerlessTopQueriesTable";
+import type {
+  CodeObject,
+  DedicatedTopConsumedObject,
+  DedicatedTopQuery,
+  TsqlSurfaceGap,
+} from "../types";
 
 interface Row extends CodeObject {
   pool: string;
@@ -23,6 +29,7 @@ const columnHelper = createColumnHelper<Row>();
 
 export default function CodeObjects() {
   const { data, loading } = useAsync(loadDedicatedPools);
+  const { data: serverless } = useAsync(loadServerless);
   const [filter, setFilter] = useState("");
   const [compatFilter, setCompatFilter] = useState("");
   const [typeFilter, setTypeFilter] = useState("");
@@ -119,89 +126,474 @@ export default function CodeObjects() {
   });
 
   if (loading) return <div className="empty">Loading…</div>;
-  if (!data || rows.length === 0)
-    return <Empty>No code objects collected. Run the dedicated_pools module.</Empty>;
+  const serverlessTopQueries = serverless?.top_queries ?? [];
+  const hasDedicated = !!data && rows.length > 0;
+  if (!hasDedicated && serverlessTopQueries.length === 0)
+    return (
+      <Empty>
+        No code objects or serverless query history collected. Run the{" "}
+        <code>dedicated_pools</code> or <code>serverless_pools</code> module.
+      </Empty>
+    );
 
   const types = Array.from(new Set(rows.map((r) => r.object_type))).sort();
+  const dedicatedTopRows: TopQueryRow[] = [];
+  const consumedRows: ConsumedObjectRow[] = [];
+  if (data) {
+    for (const p of data.pools) {
+      for (const q of p.top_queries ?? []) {
+        dedicatedTopRows.push({ ...q, pool: p.inventory.name });
+      }
+      for (const o of p.top_consumed_objects ?? []) {
+        consumedRows.push({ ...o, pool: p.inventory.name });
+      }
+    }
+  }
+  consumedRows.sort((a, b) => b.usage_count - a.usage_count);
 
   return (
     <>
-      <h1>Code objects (SQL plane) <HelpLink slug="05-code-objects" /></h1>
+      <h1>SQL Surface <HelpLink slug="05-code-objects" /></h1>
       <div className="muted small" style={{ marginBottom: 12 }}>
-        {rows.length} object(s) across {data.pools.length} pool(s)
+        {hasDedicated
+          ? `${rows.length} object(s) across ${data!.pools.length} pool(s)`
+          : "No dedicated SQL pool code objects collected."}
       </div>
 
-      <div className="toolbar">
+      {hasDedicated && (
+        <details open className="sql-surface-section" style={sectionStyle}>
+          <summary style={summaryStyle}>
+            <strong>Code objects</strong>{" "}
+            <span className="muted small">({rows.length})</span>
+          </summary>
+          <div style={{ paddingTop: 12 }}>
+            <div className="toolbar">
+              <input
+                placeholder="Filter (schema, name, id, type)"
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+              />
+              <select value={compatFilter} onChange={(e) => setCompatFilter(e.target.value)}>
+                <option value="">All compatibility</option>
+                <option value="incompatible">Incompatible</option>
+                <option value="needs_review">Needs review</option>
+                <option value="compatible">Compatible</option>
+              </select>
+              <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
+                <option value="">All types</option>
+                {types.map((t) => <option key={t} value={t}>{t}</option>)}
+              </select>
+              <span className="muted small">{filtered.length} match(es)</span>
+            </div>
+
+            <table>
+              <thead>
+                {table.getHeaderGroups().map((hg) => (
+                  <tr key={hg.id}>
+                    {hg.headers.map((h) => (
+                      <th key={h.id} onClick={h.column.getToggleSortingHandler()}>
+                        {flexRender(h.column.columnDef.header, h.getContext())}
+                        <span className="sort">
+                          {h.column.getIsSorted() === "asc" ? "▲" :
+                           h.column.getIsSorted() === "desc" ? "▼" : ""}
+                        </span>
+                      </th>
+                    ))}
+                    <th />
+                  </tr>
+                ))}
+              </thead>
+              <tbody>
+                {table.getRowModel().rows.map((r) => {
+                  const orig = r.original;
+                  const key = `${orig.pool}.${orig.code_object_id}`;
+                  const isOpen = expanded === key;
+                  return (
+                    <Fragment key={key}>
+                      <tr>
+                        {r.getVisibleCells().map((c) => (
+                          <td key={c.id}>{flexRender(c.column.columnDef.cell, c.getContext())}</td>
+                        ))}
+                        <td>
+                          <button
+                            onClick={() => setExpanded(isOpen ? null : key)}
+                            style={{
+                              background: "transparent", color: "var(--accent)",
+                              border: "none", cursor: "pointer", padding: 0,
+                            }}
+                          >
+                            {isOpen ? "Hide" : "Details"}
+                          </button>
+                        </td>
+                      </tr>
+                      {isOpen && (
+                        <tr>
+                          <td colSpan={r.getVisibleCells().length + 1}>
+                            <DetailPanel row={orig} />
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      )}
+
+      {dedicatedTopRows.length > 0 && (
+        <details className="sql-surface-section" style={sectionStyle}>
+          <summary style={summaryStyle}>
+            <strong>Top dedicated SQL pool queries by elapsed time</strong>{" "}
+            <span className="muted small">({dedicatedTopRows.length})</span>
+          </summary>
+          <div style={{ paddingTop: 12 }}>
+            <p className="muted small" style={{ marginTop: 0 }}>
+              Top 100 requests per pool from <code>sys.dm_pdw_exec_requests</code> over the last
+              14 days. The DMV is a rolling buffer, so very old requests may already be evicted.
+              Elapsed time is the closest proxy to "CPU cost" exposed by the request DMV.
+            </p>
+            <TopQueriesTable queries={dedicatedTopRows} />
+          </div>
+        </details>
+      )}
+
+      {consumedRows.length > 0 && (
+        <details className="sql-surface-section" style={sectionStyle}>
+          <summary style={summaryStyle}>
+            <strong>Top consumed tables / views (dedicated pool)</strong>{" "}
+            <span className="muted small">({consumedRows.length})</span>
+          </summary>
+          <div style={{ paddingTop: 12 }}>
+            <p className="muted small" style={{ marginTop: 0 }}>
+              Tokens from <code>sys.dm_pdw_sql_requests</code> resolved against{" "}
+              <code>INFORMATION_SCHEMA.TABLES</code> / <code>.VIEWS</code>. Usage count
+              is a relative heat signal (rolling DMV window), not an absolute query
+              count — useful for picking the first tables to migrate / materialize in
+              Fabric.
+            </p>
+            <TopConsumedObjectsTable rows={consumedRows} />
+          </div>
+        </details>
+      )}
+
+      {serverlessTopQueries.length > 0 && (
+        <details className="sql-surface-section" style={sectionStyle}>
+          <summary style={summaryStyle}>
+            <strong>Top serverless SQL queries</strong>{" "}
+            <span className="muted small">({serverlessTopQueries.length})</span>
+          </summary>
+          <div style={{ paddingTop: 12 }}>
+            <ServerlessTopQueriesTable queries={serverlessTopQueries} />
+          </div>
+        </details>
+      )}
+    </>
+  );
+}
+
+// Collapsible section styling — uses a thin border + padding so each
+// `<details>` block reads as a discrete card. `<details open>` keeps the
+// section expanded by default while still allowing the user to collapse it.
+const sectionStyle: React.CSSProperties = {
+  marginTop: 20,
+  border: "1px solid rgba(127,127,127,0.25)",
+  borderRadius: 6,
+  padding: "10px 14px",
+};
+
+const summaryStyle: React.CSSProperties = {
+  cursor: "pointer",
+  userSelect: "none",
+  fontSize: "1.05em",
+  padding: "2px 0",
+};
+
+type TopQueryRow = DedicatedTopQuery & { pool: string };
+type ConsumedObjectRow = DedicatedTopConsumedObject & { pool: string };
+
+type TQSortKey = "total_elapsed_ms" | "submit_time" | "login_name" | "pool";
+
+function TopQueriesTable({ queries }: { queries: TopQueryRow[] }): JSX.Element {
+  const [sortKey, setSortKey] = useState<TQSortKey>("total_elapsed_ms");
+  const [sortDesc, setSortDesc] = useState(true);
+  const [filter, setFilter] = useState("");
+  const [limit, setLimit] = useState(25);
+  const [open, setOpen] = useState<Record<string, boolean>>({});
+
+  const filtered = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    if (!q) return queries;
+    return queries.filter((row) => {
+      const hay = [row.login_name, row.command_text, row.status, row.pool, row.request_id]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(q);
+    });
+  }, [queries, filter]);
+
+  const sorted = useMemo(() => {
+    const arr = [...filtered];
+    arr.sort((a, b) => {
+      let av: number | string = 0;
+      let bv: number | string = 0;
+      if (sortKey === "total_elapsed_ms") {
+        av = a.total_elapsed_ms ?? -1;
+        bv = b.total_elapsed_ms ?? -1;
+      } else if (sortKey === "submit_time") {
+        av = a.submit_time ?? "";
+        bv = b.submit_time ?? "";
+      } else if (sortKey === "login_name") {
+        av = a.login_name ?? "";
+        bv = b.login_name ?? "";
+      } else {
+        av = a.pool;
+        bv = b.pool;
+      }
+      if (av < bv) return sortDesc ? 1 : -1;
+      if (av > bv) return sortDesc ? -1 : 1;
+      return 0;
+    });
+    return arr;
+  }, [filtered, sortKey, sortDesc]);
+
+  const visible = sorted.slice(0, limit);
+
+  const onHeader = (k: TQSortKey) => {
+    if (sortKey === k) setSortDesc(!sortDesc);
+    else {
+      setSortKey(k);
+      setSortDesc(true);
+    }
+  };
+  const arrow = (k: TQSortKey) => (sortKey === k ? (sortDesc ? " ▼" : " ▲") : "");
+
+  return (
+    <>
+      <div className="toolbar" style={{ marginBottom: 8 }}>
         <input
-          placeholder="Filter (schema, name, id, type)"
+          placeholder="Filter (login, command, status, pool, request id)"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
         />
-        <select value={compatFilter} onChange={(e) => setCompatFilter(e.target.value)}>
-          <option value="">All compatibility</option>
-          <option value="incompatible">Incompatible</option>
-          <option value="needs_review">Needs review</option>
-          <option value="compatible">Compatible</option>
-        </select>
-        <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)}>
-          <option value="">All types</option>
-          {types.map((t) => <option key={t} value={t}>{t}</option>)}
-        </select>
-        <span className="muted small">{filtered.length} match(es)</span>
+        <span className="muted small">
+          showing {visible.length} of {sorted.length}
+        </span>
       </div>
-
       <table>
         <thead>
-          {table.getHeaderGroups().map((hg) => (
-            <tr key={hg.id}>
-              {hg.headers.map((h) => (
-                <th key={h.id} onClick={h.column.getToggleSortingHandler()}>
-                  {flexRender(h.column.columnDef.header, h.getContext())}
-                  <span className="sort">
-                    {h.column.getIsSorted() === "asc" ? "▲" :
-                     h.column.getIsSorted() === "desc" ? "▼" : ""}
-                  </span>
-                </th>
-              ))}
-              <th />
-            </tr>
-          ))}
+          <tr>
+            <th onClick={() => onHeader("submit_time")} style={{ cursor: "pointer" }}>
+              Submitted{arrow("submit_time")}
+            </th>
+            <th onClick={() => onHeader("pool")} style={{ cursor: "pointer" }}>
+              Pool{arrow("pool")}
+            </th>
+            <th onClick={() => onHeader("login_name")} style={{ cursor: "pointer" }}>
+              Login{arrow("login_name")}
+            </th>
+            <th
+              onClick={() => onHeader("total_elapsed_ms")}
+              className="num"
+              style={{ cursor: "pointer" }}
+            >
+              Elapsed{arrow("total_elapsed_ms")}
+            </th>
+            <th>Status</th>
+            <th>Resource class</th>
+            <th>SQL</th>
+          </tr>
         </thead>
         <tbody>
-          {table.getRowModel().rows.map((r) => {
-            const orig = r.original;
-            const key = `${orig.pool}.${orig.code_object_id}`;
-            const isOpen = expanded === key;
+          {visible.map((q, idx) => {
+            const k = `${q.pool}#${q.request_id ?? `${q.submit_time}#${idx}`}`;
+            const isOpen = !!open[k];
+            const failed = q.status && q.status.toLowerCase() !== "completed";
             return (
-              <>
-                <tr key={key}>
-                  {r.getVisibleCells().map((c) => (
-                    <td key={c.id}>{flexRender(c.column.columnDef.cell, c.getContext())}</td>
-                  ))}
-                  <td>
-                    <button
-                      onClick={() => setExpanded(isOpen ? null : key)}
-                      style={{
-                        background: "transparent", color: "var(--accent)",
-                        border: "none", cursor: "pointer", padding: 0,
-                      }}
-                    >
-                      {isOpen ? "Hide" : "Details"}
-                    </button>
+              <Fragment key={k}>
+                <tr
+                  onClick={() => setOpen({ ...open, [k]: !isOpen })}
+                  style={{ cursor: "pointer" }}
+                >
+                  <td className="small">{fmtDateTime(q.submit_time)}</td>
+                  <td className="small">{q.pool}</td>
+                  <td className="small">{q.login_name ?? ""}</td>
+                  <td className="num">{fmtElapsed(q.total_elapsed_ms)}</td>
+                  <td
+                    className="small"
+                    style={failed ? { color: "#d2691e" } : undefined}
+                  >
+                    {q.status ?? ""}
+                    {failed && q.error_id ? ` (${q.error_id})` : ""}
+                  </td>
+                  <td className="small muted">{q.resource_class ?? ""}</td>
+                  <td className="small" style={{ fontFamily: "monospace" }}>
+                    {previewSql(q.command_text)}
                   </td>
                 </tr>
                 {isOpen && (
-                  <tr>
-                    <td colSpan={r.getVisibleCells().length + 1}>
-                      <DetailPanel row={orig} />
+                  <tr key={`${k}-expanded`}>
+                    <td />
+                    <td colSpan={6}>
+                      <div className="small muted" style={{ marginBottom: 4 }}>
+                        {q.request_id && (
+                          <>
+                            <strong>Request id:</strong> <code>{q.request_id}</code>
+                            {" · "}
+                          </>
+                        )}
+                        {q.session_id && (
+                          <>
+                            <strong>Session:</strong> <code>{q.session_id}</code>
+                            {" · "}
+                          </>
+                        )}
+                        <strong>Started:</strong> {fmtDateTime(q.start_time)}
+                        {" · "}
+                        <strong>Ended:</strong> {fmtDateTime(q.end_time)}
+                        {q.importance && (
+                          <>
+                            {" · "}
+                            <strong>Importance:</strong> {q.importance}
+                          </>
+                        )}
+                        {q.query_label && (
+                          <>
+                            {" · "}
+                            <strong>Label:</strong> {q.query_label}
+                          </>
+                        )}
+                      </div>
+                      <pre
+                        style={{
+                          whiteSpace: "pre-wrap",
+                          wordBreak: "break-word",
+                          margin: 0,
+                          padding: "8px 10px",
+                          background: "rgba(127,127,127,0.08)",
+                          borderRadius: 4,
+                          maxHeight: 360,
+                          overflow: "auto",
+                          fontSize: 12,
+                        }}
+                      >
+                        {q.command_text ?? "(no command text captured)"}
+                      </pre>
                     </td>
                   </tr>
                 )}
-              </>
+              </Fragment>
             );
           })}
         </tbody>
       </table>
+      {visible.length < sorted.length && (
+        <div style={{ marginTop: 8 }}>
+          <button onClick={() => setLimit(limit + 50)}>Show more</button>
+        </div>
+      )}
+    </>
+  );
+}
+
+function fmtDateTime(iso: string | null | undefined): string {
+  if (!iso) return "";
+  return iso.replace("T", " ").replace(/\.\d+/, "").replace(/Z$/, " UTC");
+}
+
+function fmtElapsed(ms: number | null | undefined): string {
+  if (ms == null) return "";
+  if (ms < 1000) return `${ms} ms`;
+  const s = ms / 1000;
+  if (s < 60) return `${s.toFixed(1)} s`;
+  const m = s / 60;
+  if (m < 60) return `${m.toFixed(1)} min`;
+  const h = m / 60;
+  return `${h.toFixed(2)} h`;
+}
+
+function previewSql(text: string | null | undefined): string {
+  if (!text) return "";
+  const single = text.replace(/\s+/g, " ").trim();
+  return single.length > 117 ? single.slice(0, 117) + "…" : single;
+}
+
+/**
+ * Compact table for the "top consumed tables / views" section. Defaults to
+ * the top 10 rows (matching what the user asked for on the SQL Surface page)
+ * with a "Show more" button to walk through the rest, plus a free-text filter
+ * for triage on busy workspaces.
+ */
+function TopConsumedObjectsTable({ rows }: { rows: ConsumedObjectRow[] }): JSX.Element {
+  const [filter, setFilter] = useState("");
+  const [limit, setLimit] = useState(10);
+
+  const q = filter.trim().toLowerCase();
+  const filtered = q
+    ? rows.filter((r) =>
+        `${r.object_name} ${r.object_type} ${r.pool}`.toLowerCase().includes(q),
+      )
+    : rows;
+  const visible = filtered.slice(0, limit);
+  const maxUsage = Math.max(1, ...visible.map((r) => r.usage_count));
+
+  return (
+    <>
+      <div className="toolbar" style={{ marginBottom: 8 }}>
+        <input
+          placeholder="Filter (schema.object, type, pool)"
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+        />
+        <span className="muted small">
+          showing {visible.length} of {filtered.length}
+        </span>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th className="num" style={{ width: 32 }}>#</th>
+            <th>Pool</th>
+            <th>Object</th>
+            <th>Type</th>
+            <th className="num">Usage count</th>
+            <th style={{ width: "30%" }}>Relative</th>
+          </tr>
+        </thead>
+        <tbody>
+          {visible.map((r, idx) => {
+            const pct = (r.usage_count / maxUsage) * 100;
+            return (
+              <tr key={`${r.pool}.${r.object_name}.${idx}`}>
+                <td className="num">{idx + 1}</td>
+                <td className="small">{r.pool}</td>
+                <td><code>{r.object_name}</code></td>
+                <td className="small muted">{r.object_type}</td>
+                <td className="num">{r.usage_count.toLocaleString()}</td>
+                <td>
+                  <div
+                    aria-hidden="true"
+                    style={{
+                      height: 8,
+                      width: `${pct}%`,
+                      background: "var(--accent, #2f81f7)",
+                      borderRadius: 2,
+                      minWidth: 2,
+                    }}
+                  />
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      {visible.length < filtered.length && (
+        <div style={{ marginTop: 8 }}>
+          <button onClick={() => setLimit(limit + 10)}>Show more</button>
+        </div>
+      )}
     </>
   );
 }

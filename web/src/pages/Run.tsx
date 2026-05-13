@@ -18,9 +18,16 @@ const ALL_MODULES = [
   "fabric_validation",
 ];
 
+// Modules that are always executed and not exposed as user-toggleable
+// checkboxes. fabric_mapping refreshes the top-line readiness/cost
+// projections that other tabs depend on, so the Run page silently
+// includes it in every submission.
+const ALWAYS_ON_MODULES = new Set<string>(["fabric_mapping"]);
+const SELECTABLE_MODULES = ALL_MODULES.filter((m) => !ALWAYS_ON_MODULES.has(m));
+
 export default function Run(): JSX.Element {
   const [selected, setSelected] = useState<Set<string>>(
-    new Set(ALL_MODULES),
+    new Set(SELECTABLE_MODULES),
   );
   const [label, setLabel] = useState<string>("");
   const [labelEdited, setLabelEdited] = useState<boolean>(false);
@@ -56,7 +63,11 @@ export default function Run(): JSX.Element {
   const start = async () => {
     setError(null);
     try {
-      const { id } = await apiStartRun([...selected], label || undefined);
+      // Always include the always-on modules (e.g. fabric_mapping) so the
+      // top-line readiness/cost projections stay fresh, even though they
+      // are hidden from the module picker.
+      const modules = Array.from(new Set([...selected, ...ALWAYS_ON_MODULES]));
+      const { id } = await apiStartRun(modules, label || undefined);
       setRunId(id);
       setRunIdInHash(id);
     } catch (e) {
@@ -83,8 +94,27 @@ export default function Run(): JSX.Element {
 
       <fieldset disabled={runId !== null && !done}>
         <legend>Modules</legend>
+        <div className="actions" style={{ marginBottom: "0.5rem" }}>
+          <button
+            type="button"
+            onClick={() => setSelected(new Set(SELECTABLE_MODULES))}
+            disabled={selected.size === SELECTABLE_MODULES.length}
+          >
+            Select all
+          </button>
+          <button
+            type="button"
+            onClick={() => setSelected(new Set())}
+            disabled={selected.size === 0}
+          >
+            Unselect all
+          </button>
+          <span className="muted">
+            {selected.size} of {SELECTABLE_MODULES.length} selected
+          </span>
+        </div>
         <div className="checkbox-grid">
-          {ALL_MODULES.map((m) => (
+          {SELECTABLE_MODULES.map((m) => (
             <label key={m} title={m}>
               <input
                 type="checkbox"
@@ -108,7 +138,7 @@ export default function Run(): JSX.Element {
           />
         </label>
         <div className="actions">
-          <button onClick={start} disabled={selected.size === 0}>
+          <button onClick={start}>
             Start run
           </button>
           {runId && !done && <button onClick={cancel}>Cancel</button>}

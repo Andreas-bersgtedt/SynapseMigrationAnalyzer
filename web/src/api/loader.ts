@@ -160,6 +160,94 @@ export const loadSecurity = () => fetchJson<SecurityReport>("security.json");
 export const loadModule = <T,>(filename: string) => fetchJson<T>(filename);
 
 // ---------------------------------------------------------------------------
+// Module availability probe (powers dynamic nav tabs)
+// ---------------------------------------------------------------------------
+
+/**
+ * Module slugs that map 1:1 to a JSON artefact in the run output. Used to
+ * decide which top-bar tabs to show: a tab whose required module is not
+ * present in the current run (static mode) or whose state isn't ok/carried
+ * (control-plane mode) is hidden.
+ */
+const PROBE_MODULES: ReadonlyArray<string> = [
+  "fabric_mapping",
+  "dedicated_pools",
+  "run_delta",
+  "cost",
+  "governance",
+  "security",
+  "storage",
+  "pipelines",
+  "spark_pools",
+  "serverless_pools",
+];
+
+let _availabilityProbe: Promise<Set<string>> | null = null;
+
+/**
+ * Returns the set of module slugs that have produced data for the current
+ * run. Result is cached for the lifetime of the page (the RunPicker
+ * triggers a full reload when the user selects a different run, so the
+ * cache lifetime matches the selected run).
+ */
+export async function detectAvailableModules(): Promise<Set<string>> {
+  if (_availabilityProbe) return _availabilityProbe;
+  _availabilityProbe = (async () => {
+    const mode = await detectMode();
+    const runId = mode === "control-plane" ? getRunIdFromHash() : null;
+    if (mode === "control-plane") {
+      if (!runId) return new Set<string>();
+      try {
+        const meta = await apiGetRun(runId);
+        const available = new Set<string>();
+        for (const m of meta.modules ?? []) {
+          // Treat any state that produced output as "available". The
+          // backend reports "ok" for fresh runs, "carried" for artefacts
+          // inherited from a previous run, and may also report cached
+          // variants. Anything else (queued/running/failed/skipped) means
+          // there is no artefact for the user to drill into yet.
+          const state = (m.state ?? "").toLowerCase();
+          if (state === "ok" || state === "carried" || state.startsWith("ok-")) {
+            available.add(m.name);
+          }
+        }
+        return available;
+      } catch {
+        return new Set<string>();
+      }
+    }
+    // Static mode: probe each known JSON in parallel. Loader cache means
+    // pages re-using these loaders won't refetch.
+    const probes: Array<[string, () => Promise<unknown | null>]> = [
+      ["fabric_mapping", loadFabricMapping],
+      ["dedicated_pools", loadDedicatedPools],
+      ["run_delta", loadRunDelta],
+      ["cost", loadCost],
+      ["governance", loadGovernance],
+      ["security", loadSecurity],
+      ["storage", loadStorage],
+      ["pipelines", loadPipelines],
+      ["spark_pools", loadSparkPools],
+      ["serverless_pools", loadServerless],
+    ];
+    const results = await Promise.all(
+      probes.map(async ([name, fn]) => {
+        try {
+          return (await fn()) ? name : null;
+        } catch {
+          return null;
+        }
+      }),
+    );
+    return new Set(results.filter((x): x is string => x !== null));
+  })();
+  return _availabilityProbe;
+}
+
+// Re-export so unit tests / dev tooling can poke at the probe list.
+export const _PROBE_MODULES_FOR_TESTS = PROBE_MODULES;
+
+// ---------------------------------------------------------------------------
 // Control-plane API helpers
 // ---------------------------------------------------------------------------
 

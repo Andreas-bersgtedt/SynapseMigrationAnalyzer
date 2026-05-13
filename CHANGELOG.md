@@ -6,6 +6,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-05-13
+
+### Added
+- **SQL Surface page** consolidates dedicated SQL pool code objects,
+  top dedicated SQL pool queries by elapsed time, and top serverless
+  SQL queries into a single page with collapsible `<details>` sections
+  so users can jump straight to what they need without scrolling.
+  Nav entry renamed from "Code objects" to "SQL Surface" and made
+  visible whenever either `dedicated_pools` or `serverless_pools` has
+  data (via new `NavEntry.requiresAny`).
+- **Top dedicated SQL pool queries** collector
+  (`sys.dm_pdw_exec_requests` + `sys.dm_pdw_exec_sessions`, last 14
+  days, top 100 by elapsed time) on `PoolAnalysis.top_queries`, with a
+  filterable / sortable drill-down on the SQL Surface page.
+- **Top consumed tables/views** collector for dedicated pools using a
+  deduped, time-bounded LIKE join over `sys.dm_pdw_sql_requests` with
+  qualified `schema.name` boundary matching to avoid substring false
+  positives. Surfaced as a new collapsible section on SQL Surface with
+  top-10 default, show-more, filter, and a relative-usage bar.
+- **Top serverless SQL queries** moved off the Dashboard onto SQL
+  Surface; Dashboard's serverless section now shows KPIs and the 7-day
+  clustered-bar chart only and points users at SQL Surface for the
+  drill-down.
+
+### Changed
+- Per-pool analyzer step budget bumped from 14 to 15 to account for
+  the new top-consumed-objects collector.
+
 ## [2.6.5] - 2026-05-12
 
 ### Changed

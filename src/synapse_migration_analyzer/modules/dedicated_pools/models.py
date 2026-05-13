@@ -198,6 +198,48 @@ class CodeObjectSummary(BaseModel):
     needs_review_object_ids: list[str] = Field(default_factory=list)
 
 
+class TopQuery(BaseModel):
+    """A single expensive request sampled from ``sys.dm_pdw_exec_requests``.
+
+    Captures the columns most useful for migration triage: identity, status,
+    timing, login, and the leading characters of the command text. The DMV
+    is a rolling buffer so the visible window is at most ~10 000 requests
+    regardless of what we ask for; ``submit_time`` is preserved so callers
+    can tell how recent the slowest queries actually were.
+    """
+    request_id: str | None = None
+    session_id: str | None = None
+    status: str | None = None
+    submit_time: datetime | None = None
+    start_time: datetime | None = None
+    end_time: datetime | None = None
+    # Renamed from total_elapsed_time so the JSON key is unambiguous about units.
+    total_elapsed_ms: int | None = None
+    resource_class: str | None = None
+    importance: str | None = None
+    query_label: str | None = None
+    error_id: str | None = None
+    login_name: str | None = None
+    # Truncated by the collector to keep the JSON manageable; the full text
+    # stays inside the dedicated pool DMV (which itself is a rolling buffer).
+    command_text: str | None = None
+
+
+class TopConsumedObject(BaseModel):
+    """A table or view that appears frequently in recent workload SQL.
+
+    Derived by tokenizing the command text in ``sys.dm_pdw_sql_requests``
+    and joining the two-part ``schema.object`` tokens to
+    ``INFORMATION_SCHEMA.TABLES`` / ``.VIEWS`` so only real, resolvable
+    objects are counted. ``usage_count`` is the number of request-token
+    matches in the DMV's rolling window — treat it as a *relative* heat
+    signal, not an absolute query count.
+    """
+    object_name: str
+    object_type: str  # "table" | "view"
+    usage_count: int
+
+
 class PoolAnalysis(BaseModel):
     inventory: PoolInventory
     schemas: list[SchemaInfo] = Field(default_factory=list)
@@ -215,6 +257,8 @@ class PoolAnalysis(BaseModel):
     distribution_candidates: list[DistributionCandidate] = Field(default_factory=list)
     tsql_surface_gaps: list[TsqlSurfaceGap] = Field(default_factory=list)
     code_object_summary: CodeObjectSummary | None = None
+    top_queries: list[TopQuery] = Field(default_factory=list)
+    top_consumed_objects: list[TopConsumedObject] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
 
 

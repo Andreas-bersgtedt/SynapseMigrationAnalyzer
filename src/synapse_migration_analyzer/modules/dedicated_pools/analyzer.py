@@ -20,6 +20,8 @@ from .collectors import (
     collect_security,
     collect_statistics,
     collect_tables,
+    collect_top_consumed_objects,
+    collect_top_queries,
     collect_usage,
     collect_workload_groups,
 )
@@ -66,8 +68,8 @@ class DedicatedPoolsAnalyzer:
             self._progress.start(0, label="no pools")
             return result
 
-        # 11 collectors + advisor + tsql gap rollup = 13 sub-steps per pool.
-        self._progress.start(len(inventories) * 13, label=f"{len(inventories)} pool(s)")
+        # 13 collectors + advisor + tsql gap rollup = 15 sub-steps per pool.
+        self._progress.start(len(inventories) * 15, label=f"{len(inventories)} pool(s)")
 
         max_workers = min(len(inventories), _pool_concurrency())
         if max_workers <= 1:
@@ -90,8 +92,8 @@ class DedicatedPoolsAnalyzer:
         # Skip data-plane collection if pool is paused.
         if (inventory.status or "").lower() == "paused":
             analysis.errors.append("Pool is paused; skipped DMV collection.")
-            # Still consume the 13 budgeted steps so totals stay accurate.
-            self._progress.step(13, label=f"{pool_name} (paused)")
+            # Still consume the 15 budgeted steps so totals stay accurate.
+            self._progress.step(15, label=f"{pool_name} (paused)")
             return analysis
 
         sql = DedicatedPoolSqlClient(self._cfg, server, inventory.name)
@@ -111,6 +113,8 @@ class DedicatedPoolsAnalyzer:
                 ("materialized_views", collect_materialized_views, "materialized_views"),
                 ("statistics", collect_statistics, "statistics"),
                 ("column_stats", collect_column_stats, "column_stats"),
+                ("top_queries", collect_top_queries, "top_queries"),
+                ("top_consumed_objects", collect_top_consumed_objects, "top_consumed_objects"),
             ):
                 try:
                     setattr(analysis, target, fn(sql))

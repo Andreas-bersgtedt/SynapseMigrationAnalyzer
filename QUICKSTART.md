@@ -687,6 +687,59 @@ To add a new rule, append a function to [rules.py](src/synapse_migration_analyze
 
 ---
 
+## Module 8 — `governance` (v1.2, opt-in)
+
+Captures workspace- and resource-level RBAC (control plane + data plane) with role-name
+resolution, managed-private-endpoint inventory, customer-managed-key configuration, and
+Microsoft Purview account detection. Emits severity-tagged findings.
+
+### 8.1 Module-specific prerequisites
+
+- `Reader` on the subscription (or RG) so the analyzer can enumerate role assignments
+  against the workspace + its data-plane resources.
+- `Microsoft.Authorization/roleAssignments/read` (covered by Reader on most scopes).
+
+### 8.2 Run & outputs
+
+```powershell
+sma analyze-governance
+# Or as part of the full sweep:
+sma analyze-all --include governance
+```
+
+Produces (under `./output/`):
+- `governance.json`, `governance.md`, `governance.html`
+- `governance_role_assignments.csv`, `governance_findings.csv`
+
+---
+
+## Module 9 — `security` (v1.2, opt-in)
+
+Captures firewall rules, AAD-only enforcement, TLS minimum version, encryption-at-rest
+configuration, AAD admins, per-pool TDE state, and a linked-service credential inventory
+with **inline-secret detection** (literal `password` / `accountKey` / `sasToken` /
+`SecureString` vs. Key Vault references — types and locations only, never values).
+
+### 9.1 Module-specific prerequisites
+
+Same Reader + Synapse Artifact User roles already required by Modules 1 / 4. No
+additional grants needed for the firewall / TDE / AAD-admin probes.
+
+### 9.2 Run & outputs
+
+```powershell
+sma analyze-security
+# Or as part of the full sweep:
+sma analyze-all --include security
+```
+
+Produces (under `./output/`):
+- `security.json`, `security.md`, `security.html`
+- `security_firewall_rules.csv`, `security_linked_service_credentials.csv`,
+  `security_findings.csv`
+
+---
+
 ## Module 10 — `cost` (v1.2)
 
 Aggregates Azure Cost Management consumption for the workspace's resource group, attributes

@@ -156,7 +156,36 @@ export interface PoolAnalysis {
   code_objects?: CodeObject[];
   tsql_surface_gaps?: TsqlSurfaceGap[];
   code_object_summary?: CodeObjectSummary | null;
+  top_queries?: DedicatedTopQuery[];
+  top_consumed_objects?: DedicatedTopConsumedObject[];
   errors?: string[];
+}
+
+export interface DedicatedTopQuery {
+  request_id?: string | null;
+  session_id?: string | null;
+  status?: string | null;
+  submit_time?: string | null;
+  start_time?: string | null;
+  end_time?: string | null;
+  total_elapsed_ms?: number | null;
+  resource_class?: string | null;
+  importance?: string | null;
+  query_label?: string | null;
+  error_id?: string | null;
+  login_name?: string | null;
+  command_text?: string | null;
+}
+
+/**
+ * A table or view that appears frequently in recent workload SQL on a
+ * dedicated SQL pool. Derived from `sys.dm_pdw_sql_requests`; counts are a
+ * relative heat signal, not an absolute query count.
+ */
+export interface DedicatedTopConsumedObject {
+  object_name: string;
+  object_type: string;
+  usage_count: number;
 }
 
 export interface DedicatedPoolsReport {
@@ -386,6 +415,18 @@ export interface ServerlessCostEstimate {
   notes?: string | null;
 }
 
+export interface ServerlessTopQuery {
+  request_id?: string | null;
+  login_name?: string | null;
+  start_time?: string | null;
+  end_time?: string | null;
+  duration_seconds?: number | null;
+  status?: string | null;
+  error_code?: string | null;
+  data_processed_mb?: number | null;
+  command_text?: string | null;
+}
+
 export interface ServerlessReport {
   workspace_name?: string | null;
   endpoint_fqdn?: string | null;
@@ -393,6 +434,7 @@ export interface ServerlessReport {
   databases?: Array<{ name: string }>;
   external_tables?: Array<unknown>;
   daily_usage?: ServerlessDailyUsage[];
+  top_queries?: ServerlessTopQuery[];
   cost_estimate?: ServerlessCostEstimate | null;
   errors?: string[];
 }

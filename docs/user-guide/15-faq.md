@@ -47,7 +47,7 @@ Check that the server is still running:
 
 ```powershell
 curl.exe http://127.0.0.1:8000/api/healthz
-# {"status":"ok","version":"2.2.2"}
+# {"status":"ok","version":"<current release>"}
 ```
 
 If `quickstart.ps1` was your launcher, look in the foreground terminal

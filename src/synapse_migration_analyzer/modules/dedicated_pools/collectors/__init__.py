@@ -10,6 +10,8 @@ from .schema import collect_schemas
 from .security import collect_security
 from .statistics_freshness import collect_statistics
 from .tables import collect_tables
+from .top_consumed_objects import collect_top_consumed_objects
+from .top_queries import collect_top_queries
 from .usage import collect_usage
 from .workload import collect_workload_groups
 
@@ -26,4 +28,6 @@ __all__ = [
     "collect_materialized_views",
     "collect_statistics",
     "collect_column_stats",
+    "collect_top_queries",
+    "collect_top_consumed_objects",
 ]

@@ -892,6 +892,8 @@ function ServerlessSection({ serverless, runMeta }: { serverless: import("../typ
   const dbCount = serverless.databases?.length ?? 0;
   const tableCount = serverless.external_tables?.length ?? 0;
   // If there's no serverless inventory at all, hide the section entirely.
+  // The top-queries table now lives on the SQL Surface page; this section
+  // only renders the high-level KPIs + daily trend chart.
   if (daily.length === 0 && dbCount === 0 && tableCount === 0) return null;
 
   // Sort ascending by day so charts read left-to-right.
@@ -932,7 +934,8 @@ function ServerlessSection({ serverless, runMeta }: { serverless: import("../typ
           returns queries submitted by the current login unless the principal has
           <code> VIEW SERVER STATE</code> or is a Synapse SQL admin. Grant that
           permission and re-run <code>sma analyze-serverless-pools</code> to populate
-          this chart.
+          this chart. Top queries (when available) are listed on the
+          <strong> SQL Surface</strong> page.
         </div>
       </section>
     );
