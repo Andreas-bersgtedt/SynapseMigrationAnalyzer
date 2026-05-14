@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, NavLink, Route, Routes } from "react-router-dom";
 import { detectAvailableModules, detectMode, type ApiMode } from "./api/loader";
 import { RunPicker } from "./components/RunPicker";
+import { ThemePicker } from "./components/ThemePicker";
 import CodeObjects from "./pages/CodeObjects";
 import Configuration from "./pages/Configuration";
 import Cost from "./pages/Cost";
@@ -13,7 +14,6 @@ import Help from "./pages/Help";
 import PrintReport from "./pages/PrintReport";
 import Recommendations from "./pages/Recommendations";
 import Run from "./pages/Run";
-import RunDiff from "./pages/RunDiff";
 import Runbook from "./pages/Runbook";
 import RunsHistory from "./pages/RunsHistory";
 import Security from "./pages/Security";
@@ -35,6 +35,13 @@ type NavEntry = {
    * queries).
    */
   requiresAny?: readonly string[];
+  /**
+   * When true, this tab is shown even when no run data exists yet
+   * (control-plane: empty availability set). Used to keep the navigation
+   * minimal on a fresh install — only entry points to produce a run and
+   * documentation should be visible.
+   */
+  alwaysShow?: boolean;
 };
 
 const STATIC_NAV: NavEntry[] = [
@@ -66,11 +73,10 @@ const CONTROL_PLANE_NAV: NavEntry[] = [
   { to: "/cost", label: "Cost", requires: "cost" },
   { to: "/governance", label: "Governance", requires: "governance" },
   { to: "/security", label: "Security", requires: "security" },
-  { to: "/run", label: "Run" },
+  { to: "/run", label: "Run", alwaysShow: true },
   { to: "/runs", label: "Runs" },
-  { to: "/diff", label: "Diff" },
-  { to: "/configuration", label: "Configuration" },
-  { to: "/help", label: "Help" },
+  { to: "/configuration", label: "Configuration", alwaysShow: true },
+  { to: "/help", label: "Help", alwaysShow: true },
 ];
 
 export default function App() {
@@ -87,14 +93,20 @@ export default function App() {
   const baseNav = mode === "control-plane" ? CONTROL_PLANE_NAV : STATIC_NAV;
   // Until the availability probe finishes, render the full nav so the
   // first paint doesn't flash a stripped-down menu. Once we know which
-  // modules produced data, hide tabs whose required module is absent.
-  const nav = available
-    ? baseNav.filter((n) => {
-        if (n.requires && !available.has(n.requires)) return false;
-        if (n.requiresAny && !n.requiresAny.some((m) => available.has(m))) return false;
-        return true;
-      })
-    : baseNav;
+  // modules produced data:
+  //   - If no run data exists yet (control-plane, empty set), show only
+  //     entry points (Run, Configuration, Help) to keep navigation clean.
+  //   - Otherwise hide tabs whose required module is absent.
+  const nav =
+    available === null
+      ? baseNav
+      : mode === "control-plane" && available.size === 0
+        ? baseNav.filter((n) => n.alwaysShow)
+        : baseNav.filter((n) => {
+            if (n.requires && !available.has(n.requires)) return false;
+            if (n.requiresAny && !n.requiresAny.some((m) => available.has(m))) return false;
+            return true;
+          });
 
   return (
     <div className="layout">
@@ -119,6 +131,7 @@ export default function App() {
             <RunPicker />
           </div>
         )}
+        <ThemePicker />
       </header>
       <main className="content">
         <Routes>
@@ -143,7 +156,6 @@ export default function App() {
             <>
               <Route path="/run" element={<Run />} />
               <Route path="/runs" element={<RunsHistory />} />
-              <Route path="/diff" element={<RunDiff />} />
               <Route path="/configuration" element={<Configuration />} />
               <Route path="/report/print" element={<PrintReport />} />
             </>

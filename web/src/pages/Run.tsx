@@ -1,5 +1,11 @@
-import { useEffect, useState } from "react";
-import { apiCancelRun, apiGetConfig, apiStartRun, setRunIdInHash } from "../api/loader";
+import { useEffect, useRef, useState } from "react";
+import {
+  apiCancelRun,
+  apiGetConfig,
+  apiStartRun,
+  detectAvailableModules,
+  setRunIdInHash,
+} from "../api/loader";
 import { useSseProgress, type ModuleProgress, type SseEvent } from "../hooks/useSseProgress";
 import HelpLink from "../components/HelpLink";
 import { moduleLabel, stateLabel } from "../lib/labels";
@@ -25,15 +31,51 @@ const ALL_MODULES = [
 const ALWAYS_ON_MODULES = new Set<string>(["fabric_mapping"]);
 const SELECTABLE_MODULES = ALL_MODULES.filter((m) => !ALWAYS_ON_MODULES.has(m));
 
+// Allowed lookback windows (days) for analyzers that fetch run history
+// (pipelines, spark_pools, monitoring). Applied globally for the run.
+const DAY_OPTIONS = [1, 3, 7, 14, 28, 60] as const;
+const DEFAULT_DAYS = 14;
+
 export default function Run(): JSX.Element {
   const [selected, setSelected] = useState<Set<string>>(
     new Set(SELECTABLE_MODULES),
   );
   const [label, setLabel] = useState<string>("");
   const [labelEdited, setLabelEdited] = useState<boolean>(false);
+  const [days, setDays] = useState<number>(DEFAULT_DAYS);
   const [runId, setRunId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const { events, progressByModule, done, error: sseError } = useSseProgress(runId);
+  // Track whether the workspace had no prior run data when this Run page
+  // mounted. If so, the first successful run unlocks the rest of the nav,
+  // and we want to land the user on the Overview with a fresh probe.
+  const wasEmptyAtMountRef = useRef<boolean | null>(null);
+  const didRedirectRef = useRef(false);
+
+  useEffect(() => {
+    detectAvailableModules()
+      .then((mods) => {
+        if (wasEmptyAtMountRef.current === null) {
+          wasEmptyAtMountRef.current = mods.size === 0;
+        }
+      })
+      .catch(() => {
+        if (wasEmptyAtMountRef.current === null) {
+          wasEmptyAtMountRef.current = true;
+        }
+      });
+  }, []);
+
+  // When the first run finishes on a previously-empty workspace, reload
+  // into the Overview so the menu bar reflects the newly available modules.
+  useEffect(() => {
+    if (!done || didRedirectRef.current) return;
+    if (wasEmptyAtMountRef.current !== true) return;
+    didRedirectRef.current = true;
+    // Full page navigation triggers a fresh module-availability probe in
+    // <App/>, which is required for the nav to update.
+    window.location.assign("/");
+  }, [done]);
 
   useEffect(() => {
     let cancelled = false;
@@ -67,7 +109,7 @@ export default function Run(): JSX.Element {
       // top-line readiness/cost projections stay fresh, even though they
       // are hidden from the module picker.
       const modules = Array.from(new Set([...selected, ...ALWAYS_ON_MODULES]));
-      const { id } = await apiStartRun(modules, label || undefined);
+      const { id } = await apiStartRun(modules, label || undefined, days);
       setRunId(id);
       setRunIdInHash(id);
     } catch (e) {
@@ -125,6 +167,26 @@ export default function Run(): JSX.Element {
             </label>
           ))}
         </div>
+        <label style={{ display: "block" }}>
+          <span style={{ display: "block", marginBottom: 4 }}>
+            Lookback window (days)
+          </span>
+          <select
+            value={days}
+            onChange={(e) => setDays(parseInt(e.target.value, 10))}
+            title="Global lookback window applied to pipelines, Spark, and monitoring run-history fetches."
+          >
+            {DAY_OPTIONS.map((d) => (
+              <option key={d} value={d}>{d} day{d === 1 ? "" : "s"}</option>
+            ))}
+          </select>
+          <span
+            className="muted"
+            style={{ display: "block", marginTop: 4, fontSize: "0.85em" }}
+          >
+            Applied to pipelines, Spark history, and monitoring.
+          </span>
+        </label>
         <label>
           <span>Label (optional)</span>
           <input
@@ -152,7 +214,12 @@ export default function Run(): JSX.Element {
         <div className="card" style={{ marginTop: "1rem" }}>
           <div className="label">Run {runId}</div>
           <ProgressList events={events} progressByModule={progressByModule} />
-          {done && <p>Run finished. Switch pages to inspect results.</p>}
+          {done && wasEmptyAtMountRef.current === true && (
+            <p>Run finished — loading the Overview…</p>
+          )}
+          {done && wasEmptyAtMountRef.current !== true && (
+            <p>Run finished. Switch pages to inspect results.</p>
+          )}
         </div>
       )}
     </section>

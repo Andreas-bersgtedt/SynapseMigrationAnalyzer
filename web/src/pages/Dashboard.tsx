@@ -467,6 +467,8 @@ function PipelinesSection({ pipelines, runMeta }: { pipelines: import("../types"
         />
       </div>
 
+      <DailyRunsChart history={history} />
+
       <table style={{ marginTop: 12 }}>
         <thead>
           <tr>
@@ -513,6 +515,164 @@ function PipelinesSection({ pipelines, runMeta }: { pipelines: import("../types"
       )}
     </section>
   );
+}
+
+/**
+ * Stacked bar chart of daily pipeline run outcomes (succeeded / failed /
+ * other) across the fetched run-history window. Renders inline SVG so it
+ * works in print / static SPA mode without any chart library.
+ */
+function DailyRunsChart({ history }: { history: import("../types").PipelineRunHistory }) {
+  const daily = history.daily_status;
+  if (!daily) return null;
+
+  // Fixed 28-day window ending at today (UTC inclusive) — mirrors the
+  // Spark daily bars chart so the two visuals line up. The pipeline
+  // analyzer's run-history window may be wider (90d max) but capping the
+  // chart at 28 days keeps it consistent and avoids huge empty gutters
+  // when only the trailing slice has data.
+  const windowDays = 28;
+  const todayUTC = new Date();
+  todayUTC.setUTCHours(0, 0, 0, 0);
+  const startDayUTC = new Date(
+    todayUTC.getTime() - (windowDays - 1) * 24 * 60 * 60 * 1000,
+  );
+
+  const days: Array<{ date: string; succeeded: number; failed: number; other: number; total: number }> = [];
+  for (let i = 0; i < windowDays; i++) {
+    const d = new Date(startDayUTC.getTime() + i * 24 * 60 * 60 * 1000);
+    const iso = d.toISOString().slice(0, 10);
+    const v = daily[iso] ?? { succeeded: 0, failed: 0, other: 0 };
+    days.push({
+      date: iso,
+      succeeded: v.succeeded ?? 0,
+      failed: v.failed ?? 0,
+      other: v.other ?? 0,
+      total: (v.succeeded ?? 0) + (v.failed ?? 0) + (v.other ?? 0),
+    });
+  }
+  // Don't render an empty chart when nothing was observed.
+  const grandTotal = days.reduce((s, d) => s + d.total, 0);
+  if (grandTotal === 0) return null;
+
+  const maxTotal = Math.max(...days.map((d) => d.total), 1);
+  // Y-axis tick (nearest "nice" value above maxTotal).
+  const niceMax = niceCeil(maxTotal);
+
+  // Layout — mirrors SparkDailyBars (width 720, height 240, padX 56).
+  const width = 720;
+  const height = 240;
+  const padX = 56;
+  const padTop = 16;
+  const padBottom = 44;
+  const innerH = height - padTop - padBottom;
+  const groupW = (width - padX * 2) / days.length;
+  const barW = Math.max(4, Math.min(24, groupW - 2));
+
+  const colorOk = "var(--ok)";
+  const colorErr = "var(--err)";
+  const colorOther = "var(--muted)";
+  const axisColor = "var(--border)";
+  const textColor = "var(--muted)";
+
+  // Y ticks: 0, niceMax/2, niceMax
+  const yTicks = [0, niceMax / 2, niceMax];
+
+  // X tick labels — pick ~6 evenly spaced days.
+  const labelEvery = Math.max(1, Math.ceil(days.length / 6));
+
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div className="small muted" style={{ marginBottom: 4 }}>
+        Daily pipeline run outcomes (last {windowDays} days)
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <svg
+          width={width}
+          height={height}
+          role="img"
+          aria-label="Stacked bar chart of daily pipeline run outcomes"
+        >
+          {/* Y-axis grid + labels */}
+          {yTicks.map((t, i) => {
+            const y = padTop + innerH - (t / niceMax) * innerH;
+            return (
+              <g key={i}>
+                <line
+                  x1={padX}
+                  x2={width - padX}
+                  y1={y}
+                  y2={y}
+                  stroke={axisColor}
+                  strokeDasharray={i === 0 ? undefined : "2,3"}
+                />
+                <text x={padX - 6} y={y + 3} textAnchor="end" fontSize={10} fill={textColor}>
+                  {Math.round(t)}
+                </text>
+              </g>
+            );
+          })}
+
+          {/* Bars */}
+          {days.map((d, i) => {
+            const x = padX + i * groupW + (groupW - barW) / 2;
+            const okH = (d.succeeded / niceMax) * innerH;
+            const errH = (d.failed / niceMax) * innerH;
+            const otherH = (d.other / niceMax) * innerH;
+            const baseY = padTop + innerH;
+            const okY = baseY - okH;
+            const errY = okY - errH;
+            const otherY = errY - otherH;
+            const showLabel = i === 0 || i === days.length - 1 || i % labelEvery === 0;
+            const title = `${d.date} — ${d.succeeded} ok · ${d.failed} failed${d.other ? ` · ${d.other} other` : ""}`;
+            return (
+              <g key={d.date}>
+                <title>{title}</title>
+                {d.succeeded > 0 && (
+                  <rect x={x} y={okY} width={barW} height={okH} fill={colorOk} />
+                )}
+                {d.failed > 0 && (
+                  <rect x={x} y={errY} width={barW} height={errH} fill={colorErr} />
+                )}
+                {d.other > 0 && (
+                  <rect x={x} y={otherY} width={barW} height={otherH} fill={colorOther} opacity={0.6} />
+                )}
+                {showLabel && (
+                  <text
+                    x={x + barW / 2}
+                    y={height - padBottom + 14}
+                    textAnchor="middle"
+                    fontSize={10}
+                    fill={textColor}
+                  >
+                    {d.date.slice(5)}
+                  </text>
+                )}
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+      <div className="small muted" style={{ display: "flex", gap: 14, marginTop: 4 }}>
+        <span><span style={{ display: "inline-block", width: 10, height: 10, background: colorOk, borderRadius: 2, marginRight: 4, verticalAlign: "middle" }} />Succeeded</span>
+        <span><span style={{ display: "inline-block", width: 10, height: 10, background: colorErr, borderRadius: 2, marginRight: 4, verticalAlign: "middle" }} />Failed</span>
+        <span><span style={{ display: "inline-block", width: 10, height: 10, background: colorOther, borderRadius: 2, marginRight: 4, verticalAlign: "middle", opacity: 0.6 }} />Other (in-progress, cancelled, queued)</span>
+      </div>
+    </div>
+  );
+}
+
+function niceCeil(n: number): number {
+  if (n <= 1) return 1;
+  const exp = Math.floor(Math.log10(n));
+  const base = Math.pow(10, exp);
+  const r = n / base;
+  let nice: number;
+  if (r <= 1) nice = 1;
+  else if (r <= 2) nice = 2;
+  else if (r <= 5) nice = 5;
+  else nice = 10;
+  return nice * base;
 }
 
 // ---------------------------------------------------------------------------

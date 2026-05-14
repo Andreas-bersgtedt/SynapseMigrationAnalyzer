@@ -347,6 +347,12 @@ export interface PipelineRunHistory {
   fetched_activity_run_count: number;
   truncated: boolean;
   by_pipeline: PipelineRunStats[];
+  /**
+   * Per-UTC-day rollup of run outcomes across all pipelines in the
+   * window. Keys are ISO date strings (YYYY-MM-DD); values count
+   * succeeded / failed / other (in-progress, cancelled, queued).
+   */
+  daily_status?: Record<string, { succeeded: number; failed: number; other: number }>;
 }
 
 export interface PipelinesReport {

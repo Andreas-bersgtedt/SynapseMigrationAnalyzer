@@ -331,11 +331,19 @@ export async function apiGetRun(id: string): Promise<RunMeta> {
   return r.json() as Promise<RunMeta>;
 }
 
-export async function apiStartRun(modules: string[], label?: string): Promise<{ id: string }> {
+export async function apiStartRun(
+  modules: string[],
+  label?: string,
+  days?: number,
+): Promise<{ id: string }> {
   const r = await fetch("/api/runs", {
     method: "POST",
     headers: API_HEADERS,
-    body: JSON.stringify({ modules, label: label ?? null }),
+    body: JSON.stringify({
+      modules,
+      label: label ?? null,
+      days: days ?? null,
+    }),
   });
   if (!r.ok) {
     const detail = await r.text();
