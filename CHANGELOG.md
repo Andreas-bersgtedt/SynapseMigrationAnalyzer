@@ -6,6 +6,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-05-14
+
+### Added
+- **Global *Lookback* selector on the Run page.** A new dropdown
+  exposes 1 / 3 / 7 / 14 / 28 / 60 day windows (default **14**) and
+  is applied uniformly to every analyzer that fetches run history:
+  `pipelines`, `spark_pools` (Livy) and `monitoring` (Azure Monitor
+  metrics). The frontend posts `days` on `POST /api/runs` and the
+  job runner overrides `SMA_PIPELINES_RUN_DAYS`,
+  `SMA_SPARK_RUN_DAYS` and `SMA_MONITORING_DAYS` for the duration
+  of the run, restoring the previous values in `finally`. Analyzers
+  that don't fetch run history ignore the field. `StartRunRequest`
+  validates the value (`1 ≤ days ≤ 365`).
+- **Per-pool progress for Spark Livy history fetches.** The
+  `spark_pools` analyzer now reports two progress steps per pool
+  (`spark batch history [pool]`, `spark session history [pool]`) so
+  the Run page bar reflects Livy work as it pages, instead of
+  freezing at a single `spark_history` step on busy workspaces.
+
+### Changed
+- **`SMA_SPARK_RUN_LIMIT` default raised from `5000` → `50000`.**
+  The Synapse Livy job/session list APIs have no server-side time
+  filter, so the client already pages offset-based newest-first and
+  terminates as soon as a full page is older than the lookback
+  window (`stop_old`). The previous 5 000 limit was therefore the
+  *only* cause of truncation on production workspaces. The hard
+  safety ceiling stays at `_HARD_LIMIT = 100000`. Explicit
+  `SMA_SPARK_RUN_LIMIT` overrides still win.
+
+### Fixed
+- **Pipeline run-history daily chunking is on by default.** The
+  `_collect_run_history` path now requests one day at a time and
+  back-fills pipelines with zero global runs via a per-status
+  `Status Equals` server-side query, eliminating the residual
+  `truncated=true` cases on workspaces with high-frequency
+  pipelines. (Shipped in `6a75b0f`, called out here for visibility.)
+
 ## [3.1.0] - 2026-05-13
 
 ### Fixed

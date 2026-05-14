@@ -160,8 +160,10 @@ the React SPA on the same origin. Analysts can:
 
 - Edit `.env` from the browser (Configuration page) — secret values are
   write-only; reads return only `set` / `unset`.
-- Kick off analyzer runs (Run page) with a module checklist and watch live
-  progress over Server-Sent Events.
+- Kick off analyzer runs (Run page) with a module checklist, a
+  global **Lookback** selector (1 / 3 / 7 / 14 / 28 / 60 days,
+  default 14 — applied to pipelines, Spark history and monitoring)
+  and watch live progress over Server-Sent Events.
 - Browse run history (Runs page, with per-row Delete) and diff any two
   runs (Diff page).
 - See workspace-level vitals on the **Dashboard**: readiness score, T-SQL

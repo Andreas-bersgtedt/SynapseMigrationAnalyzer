@@ -479,8 +479,8 @@ Tunable env vars:
 | Env var | Default | Notes |
 |---|---|---|
 | `SMA_SPARK_RUN_HISTORY` | `1` | Set to `0` to skip Livy history entirely |
-| `SMA_SPARK_RUN_DAYS` | `90` | Trailing-days lookback window |
-| `SMA_SPARK_RUN_LIMIT` | `5000` | Per-pool, per-kind run cap (oldest dropped) |
+| `SMA_SPARK_RUN_DAYS` | `90` | Trailing-days lookback window (overridden by the Run page **Lookback** selector) |
+| `SMA_SPARK_RUN_LIMIT` | `50000` | Per-pool, per-kind run cap. Livy has no server-side date filter, so the client pages newest-first and stops as soon as a full page is older than the window; this limit is a safety ceiling, raised in 3.2.0 from `5000` to prevent premature truncation on busy workspaces. Hard ceiling: `100000`. |
 | `SMA_SPARK_RUN_PAGE_SIZE` | `100` | Livy pagination page size (max 200) |
 | `SMA_SPARK_RUN_CONCURRENCY` | `4` | Parallel per-pool fetches via `ThreadPoolExecutor` |
 
@@ -529,7 +529,7 @@ Tunable via env vars (and/or `--since` / `--no-run-history`):
 | Env var | Default | Notes |
 |---|---|---|
 | `SMA_PIPELINES_RUN_HISTORY` | `1` | Set to `0` to skip the fetch entirely |
-| `SMA_PIPELINES_RUN_DAYS` | `90` | Widest window (also caps the API range; 7/14/28 are clamped to it) |
+| `SMA_PIPELINES_RUN_DAYS` | `90` | Widest window (also caps the API range; 7/14/28 are clamped to it). Overridden by the Run page **Lookback** selector. |
 | `SMA_PIPELINES_RUN_LIMIT` | `5000` | Safety cap on total runs / activity rows fetched per call; sets `truncated=true` when reached |
 | `SMA_PIPELINES_RUN_BACKFILL_PER_PIPELINE` | `10` | When the global cap is hit, fetch up to N most-recent runs per pipeline that ended up with zero global runs |
 | `SMA_PIPELINES_ACTIVITY_RUNS` | `1` | Set to `0` to skip activity-run fetch (data-movement metrics will be `null`) |
@@ -569,7 +569,7 @@ Default window is 7 days at 1-hour interval. Tunable via env vars:
 
 | Env var | Default | Notes |
 |---|---|---|
-| `SMA_MONITORING_DAYS` | `7` | Window size in days |
+| `SMA_MONITORING_DAYS` | `7` | Window size in days. Overridden by the Run page **Lookback** selector. |
 | `SMA_MONITORING_INTERVAL` | `PT1H` | ISO-8601 duration |
 | `SMA_MONITORING_AGG` | `Average` | One of `Average` / `Total` / `Maximum` / `Minimum` |
 
