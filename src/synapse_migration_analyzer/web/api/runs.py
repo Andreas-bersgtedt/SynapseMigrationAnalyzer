@@ -18,7 +18,9 @@ async def start_run(
     state: AppState = Depends(get_state),
 ) -> StartRunResponse:
     try:
-        meta = await state.runner.start(body.modules, label=body.label)
+        meta = await state.runner.start(
+            body.modules, label=body.label, days=body.days,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:

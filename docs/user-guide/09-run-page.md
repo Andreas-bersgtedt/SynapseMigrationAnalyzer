@@ -21,7 +21,8 @@ The page does not consume any analyzer JSON — it talks to the API
 ```
 Start a new run
 
-Label  [ syn-prod-eu …………………………………… ]   ← defaults to the workspace name
+Lookback [ 14 days ▾ ]                       ← 1 / 3 / 7 / 14 / 28 / 60 days
+Label    [ syn-prod-eu ………………………………… ]      ← defaults to the workspace name
 
 Modules
 [x] dedicated_pools     [x] serverless_pools   [x] spark_pools
@@ -48,6 +49,34 @@ latest event. State pill: `pending` (muted), `running` (amber spinner),
 `ok` (green), `failed` (red).
 
 ## Field reference
+
+### Lookback
+
+Global trailing-days window applied to every analyzer that fetches
+run history — **pipelines**, **spark_pools** (Livy history) and
+**monitoring** (Azure Monitor metrics).
+
+| Option | Notes |
+| ------ | ----- |
+| 1 day  | Smoke-test / debug run; finishes fastest. |
+| 3 days | Short rolling window for a daily health-check. |
+| 7 days | Matches the Dashboard's *last 7 days* cards. |
+| 14 days | **Default.** Good signal-to-noise for most assessments. |
+| 28 days | Matches the headline pipeline run-stats window. |
+| 60 days | Long lookback; expect noticeably longer run time on busy workspaces. |
+
+The selector **overrides** `SMA_PIPELINES_RUN_DAYS`,
+`SMA_SPARK_RUN_DAYS` and `SMA_MONITORING_DAYS` for the duration of
+the run; previous environment values are restored when the run
+finishes (or fails / is cancelled). Analyzers that don't fetch run
+history (e.g. `dedicated_pools`, `serverless_pools`, `storage`,
+`security`, `governance`, `fabric_mapping`, `cost`,
+`fabric_validation`) ignore the selector entirely.
+
+> Spark Livy has no server-side date filter — the client pages
+> newest-first and stops once a full page is older than the window
+> (`stop_old`). The `SMA_SPARK_RUN_LIMIT` ceiling (default `50000`
+> since 3.2.0) is the only other guard.
 
 ### Label
 

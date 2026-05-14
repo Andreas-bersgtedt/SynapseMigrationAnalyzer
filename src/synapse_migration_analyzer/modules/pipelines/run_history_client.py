@@ -88,6 +88,52 @@ class RunHistoryClient:
             if not token:
                 return
 
+    def count_pipeline_runs(
+        self,
+        *,
+        start: datetime,
+        end: datetime,
+        status: str,
+    ) -> int:
+        """Return the count of pipeline runs in [start, end) with ``status``.
+
+        Streams pages with a server-side ``Status Equals <status>`` filter
+        but only counts rows — does not buffer them. Designed for the daily
+        status rollup: status buckets are usually small (especially failed /
+        cancelled), so each call is cheap.
+        """
+        total = 0
+        token: str | None = None
+        filters = [RunQueryFilter(
+            operand=RunQueryFilterOperand.STATUS,
+            operator=RunQueryFilterOperator.EQUALS,
+            values=[status],
+        )]
+        order_by = [RunQueryOrderBy(
+            order_by=RunQueryOrderByField.RUN_START,
+            order=RunQueryOrder.DESC,
+        )]
+        while True:
+            params = RunFilterParameters(
+                last_updated_after=start,
+                last_updated_before=end,
+                continuation_token=token,
+                filters=filters,
+                order_by=order_by,
+            )
+            resp = self._artifacts.pipeline_run.query_pipeline_runs_by_workspace(params)
+            page = resp.value or []
+            total += len(page)
+            token = getattr(resp, "continuation_token", None)
+            if not token:
+                return total
+            if total >= _HARD_RUN_LIMIT:
+                log.warning(
+                    "count_pipeline_runs hit hard cap %d (status=%s)",
+                    _HARD_RUN_LIMIT, status,
+                )
+                return total
+
     def iter_activity_runs(
         self,
         *,

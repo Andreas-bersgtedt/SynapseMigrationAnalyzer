@@ -165,6 +165,11 @@ class PipelineRunHistory(BaseModel):
     fetched_activity_run_count: int = 0
     truncated: bool = False
     by_pipeline: list[PipelineRunStats] = Field(default_factory=list)
+    # Per-UTC-day rollup of run outcomes across *all* pipelines in the
+    # fetched window. Keys are ISO date strings (``YYYY-MM-DD``) and
+    # values are counts {succeeded, failed, other}. Empty when no runs
+    # were fetched. Powers the daily success/failure stacked bar chart.
+    daily_status: dict[str, dict[str, int]] = Field(default_factory=dict)
 
 
 class PipelinesAnalysis(BaseModel):

@@ -12,6 +12,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import shutil
 import threading
 import time
@@ -260,7 +261,13 @@ class JobRunner:
                 "modules": carried,
             })
 
-    async def start(self, modules: list[str], *, label: str | None = None) -> RunMeta:
+    async def start(
+        self,
+        modules: list[str],
+        *,
+        label: str | None = None,
+        days: int | None = None,
+    ) -> RunMeta:
         unknown = [m for m in modules if m not in self._dispatch]
         if unknown:
             raise ValueError(f"unknown modules: {unknown}. Known: {sorted(self._dispatch)}")
@@ -298,15 +305,29 @@ class JobRunner:
 
             # Spawn the actual work. ``_busy`` will be cleared by ``_run``.
             loop = asyncio.get_running_loop()
-            loop.create_task(self._run(meta, cfg))
+            loop.create_task(self._run(meta, cfg, days=days))
             return meta
         except BaseException:
             # Failed to schedule — release the slot so subsequent attempts work.
             self._busy = False
             raise
 
-    async def _run(self, meta: RunMeta, cfg: AppConfig) -> None:
+    async def _run(self, meta: RunMeta, cfg: AppConfig, *, days: int | None = None) -> None:
         run_id = meta.id
+        # Apply the per-run global lookback window by mutating os.environ
+        # before the analyzers spin up. We restore the previous values in
+        # the ``finally`` block so subsequent runs aren't affected.
+        env_overrides: dict[str, str] = {}
+        if days is not None and days > 0:
+            env_overrides = {
+                "SMA_PIPELINES_RUN_DAYS": str(days),
+                "SMA_SPARK_RUN_DAYS": str(days),
+                "SMA_MONITORING_DAYS": str(days),
+            }
+        prev_env: dict[str, str | None] = {}
+        for k, v in env_overrides.items():
+            prev_env[k] = os.environ.get(k)
+            os.environ[k] = v
         try:
             async with self._lock:
                 meta.status = "running"
@@ -486,6 +507,14 @@ class JobRunner:
             # raised. ``start`` will refuse new runs until this clears.
             self._busy = False
             self._lost_emitted.discard(run_id)
+            # Restore any SMA_*_DAYS env vars we overrode for this run so
+            # subsequent runs (or other code in the same process) see the
+            # original values.
+            for k, prev in prev_env.items():
+                if prev is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = prev
 
 
 def _run_module_sync(

@@ -128,12 +128,27 @@ class SparkPoolsAnalyzer:
         # with ThreadPoolExecutor to bound wall-clock on workspaces with many pools.
         if _env_flag("SMA_SPARK_RUN_HISTORY", default=True) and result.pools:
             days = _env_int("SMA_SPARK_RUN_DAYS", default=90, minimum=1)
-            limit = _env_int("SMA_SPARK_RUN_LIMIT", default=5000, minimum=1)
+            # The Livy job/session list APIs don't expose a server-side
+            # time filter, so the client pages offset-based newest-first
+            # and stops once a whole page is fully older than ``start``.
+            # The ``limit`` is only a *safety* ceiling — bump it well above
+            # the typical 5000-row truncation so production workspaces
+            # collect a complete window. SMA_SPARK_RUN_LIMIT still wins
+            # when explicitly overridden.
+            limit = _env_int("SMA_SPARK_RUN_LIMIT", default=50000, minimum=1)
             page_size = _env_int("SMA_SPARK_RUN_PAGE_SIZE", default=20, minimum=1)
             concurrency = _env_int("SMA_SPARK_RUN_CONCURRENCY", default=4, minimum=1)
             start = datetime.now(timezone.utc) - timedelta(days=days)
             history = SparkHistoryClient(self._cfg.azure)
             collected: list[SparkRunRecord] = []
+
+            # Per-pool progress: one sub-step per pool × {batch, session}.
+            pool_names = [p.name for p in result.pools]
+            self._progress.add_total(len(pool_names) * 2)
+            self._progress.message(
+                f"fetching Spark Livy history ({days} days) across "
+                f"{len(pool_names)} pool{'s' if len(pool_names) != 1 else ''}"
+            )
 
             def _fetch(pool_name: str) -> list[SparkRunRecord]:
                 runs: list[SparkRunRecord] = []
@@ -141,24 +156,31 @@ class SparkPoolsAnalyzer:
                     runs.extend(history.iter_batch_jobs(
                         pool_name, start=start, limit=limit, page_size=page_size,
                     ))
+                    self._progress.step(
+                        1, label=f"spark batch history [{pool_name}]",
+                    )
                 except Exception as exc:  # noqa: BLE001
                     log.warning("spark batch history (%s) failed: %s", pool_name, exc)
                     result.errors.append(
                         format_error(f"spark_history_batches[{pool_name}]", exc)
                     )
+                    self._progress.step(1)
                 try:
                     runs.extend(history.iter_sessions(
                         pool_name, start=start, limit=limit, page_size=page_size,
                     ))
+                    self._progress.step(
+                        1, label=f"spark session history [{pool_name}]",
+                    )
                 except Exception as exc:  # noqa: BLE001
                     log.warning("spark session history (%s) failed: %s", pool_name, exc)
                     result.errors.append(
                         format_error(f"spark_history_sessions[{pool_name}]", exc)
                     )
+                    self._progress.step(1)
                 return runs
 
             try:
-                pool_names = [p.name for p in result.pools]
                 with ThreadPoolExecutor(max_workers=concurrency) as ex:
                     futures = {ex.submit(_fetch, name): name for name in pool_names}
                     for fut in as_completed(futures):

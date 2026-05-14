@@ -6,6 +6,7 @@ import os
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
+from datetime import date as _date
 
 from ...config import AppConfig
 from ...errors import format_error
@@ -131,7 +132,14 @@ class PipelinesAnalyzer:
     def _collect_run_history(self, result: PipelinesAnalysis) -> PipelineRunHistory:
         max_window = max(RUN_STATS_WINDOWS_DAYS)
         days = _env_int("SMA_PIPELINES_RUN_DAYS", default=max_window, minimum=1)
-        run_limit = _env_int("SMA_PIPELINES_RUN_LIMIT", default=5000, minimum=1)
+        # In daily-fetch mode the limit is cumulative across many small
+        # per-day queries, so default it higher than the single-call
+        # 5000-row sweet spot. Users with explicit overrides keep them.
+        daily_fetch = _env_flag("SMA_PIPELINES_DAILY_FETCH", default=True)
+        run_limit_default = 50000 if daily_fetch else 5000
+        run_limit = _env_int(
+            "SMA_PIPELINES_RUN_LIMIT", default=run_limit_default, minimum=1,
+        )
         fetch_activity_runs = _env_flag("SMA_PIPELINES_ACTIVITY_RUNS", default=True)
         # Sampling cap: per-pipeline upper bound on how many terminal runs we
         # actually fetch activity-runs for. The aggregator only needs a
@@ -152,14 +160,73 @@ class PipelinesAnalyzer:
 
         client = RunHistoryClient(self._cfg.azure)
 
-        # Pull all runs first (ordered RunStart DESC server-side, so the
-        # most recent runs are kept when the cap is hit).
+        # Two fetch strategies:
+        #   1. Daily-chunked (default): iterate one UTC day at a time and
+        #      pull *all* runs for that day via continuation paging. This
+        #      avoids the single-call 5000-row ceiling so the aggregator
+        #      sees a complete picture for every window, every pipeline,
+        #      and every status. A cumulative cap (SMA_PIPELINES_RUN_LIMIT)
+        #      still applies as a safety net.
+        #   2. Legacy single-call: one big paged query for the whole window.
+        #      Kept for environments that prefer fewer API round-trips.
         runs: list[dict] = []
-        for run in client.iter_pipeline_runs(start=start, end=end, limit=run_limit):
-            runs.append(run)
+        if daily_fetch:
+            # Whole UTC days inside the window, in chronological order.
+            first_day = start.astimezone(timezone.utc).date()
+            last_day = end.astimezone(timezone.utc).date()
+            day_count = (last_day - first_day).days + 1
+            self._progress.add_total(day_count)
+            self._progress.message(
+                f"fetching pipeline runs day-by-day ({day_count} days)"
+            )
+            cur = first_day
+            for idx in range(day_count):
+                remaining_days = day_count - idx - 1
+                day_start = datetime.combine(cur, datetime.min.time(), timezone.utc)
+                day_end = day_start + timedelta(days=1)
+                if day_start < start:
+                    day_start = start
+                if day_end > end:
+                    day_end = end
+                remaining_budget = run_limit - len(runs)
+                if remaining_budget <= 0:
+                    history.truncated = True
+                    # Still advance the progress bar for the skipped days
+                    # so the UI reaches 100%.
+                    self._progress.step(
+                        1,
+                        label=f"pipeline runs {cur.isoformat()} (cap hit, "
+                        f"skipping {remaining_days + 1} days)",
+                    )
+                    cur += timedelta(days=1)
+                    continue
+                try:
+                    for run in client.iter_pipeline_runs(
+                        start=day_start, end=day_end, limit=remaining_budget,
+                    ):
+                        runs.append(run)
+                        if len(runs) >= run_limit:
+                            history.truncated = True
+                            break
+                except Exception as exc:  # noqa: BLE001
+                    log.debug("daily fetch[%s] failed: %s", cur, exc)
+                    result.errors.append(format_error(
+                        f"runs_daily[{cur.isoformat()}]", exc,
+                    ))
+                self._progress.step(
+                    1,
+                    label=f"pipeline runs {cur.isoformat()} ("
+                    f"{remaining_days} day{'s' if remaining_days != 1 else ''} left)",
+                )
+                cur += timedelta(days=1)
+        else:
+            # Single-call pull — ordered RunStart DESC server-side, so when
+            # the cap is hit the oldest runs are the ones dropped.
+            for run in client.iter_pipeline_runs(start=start, end=end, limit=run_limit):
+                runs.append(run)
+            if len(runs) >= run_limit:
+                history.truncated = True
         history.fetched_run_count = len(runs)
-        if len(runs) >= run_limit:
-            history.truncated = True
 
         # When the global cap was hit, low-frequency pipelines may have been
         # starved by a few high-volume ones. For every pipeline that ended
@@ -295,7 +362,116 @@ class PipelinesAnalyzer:
             ),
             now=end,
         )
+
+        # Per-UTC-day rollup of run outcomes for the daily bar chart.
+        # Bucket by the run's end timestamp (falling back to run_start so
+        # in-progress / cancelled runs still appear).
+        daily: dict[str, dict[str, int]] = {}
+        for run in runs:
+            ts = run.get("run_end") or run.get("run_start")
+            if ts is None:
+                continue
+            try:
+                day = ts.astimezone(timezone.utc).date().isoformat()
+            except Exception:  # noqa: BLE001
+                continue
+            status = (run.get("status") or "").lower()
+            bucket = daily.setdefault(day, {"succeeded": 0, "failed": 0, "other": 0})
+            if status == "succeeded":
+                bucket["succeeded"] += 1
+            elif status == "failed":
+                bucket["failed"] += 1
+            else:
+                bucket["other"] += 1
+
+        # When the global run-fetch was truncated, the bucketed counts above
+        # only cover the trailing slice of the window (e.g. last 1-2 days of
+        # a 28-day window). Fall back to per-day, per-status count queries
+        # against Synapse Monitor to fill in the earlier days without
+        # buffering the rows. Status buckets are typically small (especially
+        # Failed / Cancelled) so this is cheap. Can be disabled with
+        # SMA_PIPELINES_DAILY_BACKFILL=0.
+        if history.truncated and _env_flag("SMA_PIPELINES_DAILY_BACKFILL", default=True):
+            try:
+                self._backfill_daily_status(client, start, end, daily)
+            except Exception as exc:  # noqa: BLE001
+                log.debug("daily-status backfill failed: %s", exc)
+                result.errors.append(format_error("daily_status_backfill", exc))
+        history.daily_status = daily
         return history
+
+    def _backfill_daily_status(
+        self,
+        client: RunHistoryClient,
+        start: datetime,
+        end: datetime,
+        daily: dict[str, dict[str, int]],
+    ) -> None:
+        """Fill missing per-day counts using server-side per-status queries.
+
+        Strategy: for each whole UTC day in [start, end), and for each of
+        Succeeded / Failed / Cancelled, issue a single ``queryByWorkspace``
+        scoped to that day-window and that status, and count the rows
+        without keeping them. We only touch days not already populated by
+        the in-memory rollup so a freshly-cached day is never overwritten.
+        """
+        # Whole UTC days inside the window.
+        first_day = start.astimezone(timezone.utc).date()
+        last_day = end.astimezone(timezone.utc).date()
+        statuses = (
+            ("Succeeded", "succeeded"),
+            ("Failed", "failed"),
+            ("Cancelled", "other"),
+        )
+        # Pre-compute which days need a query so we can publish an accurate
+        # remaining-days count to the progress reporter.
+        missing_days: list[_date] = []
+        cur = first_day
+        while cur <= last_day:
+            existing = daily.get(cur.isoformat())
+            if not existing or sum(existing.values()) == 0:
+                missing_days.append(cur)
+            cur += timedelta(days=1)
+        if not missing_days:
+            return
+        self._progress.add_total(len(missing_days))
+        self._progress.message(
+            f"backfilling daily run counts ({len(missing_days)} days)"
+        )
+        backfilled_days = 0
+        for idx, cur in enumerate(missing_days, start=1):
+            remaining = len(missing_days) - idx
+            day_start = datetime.combine(cur, datetime.min.time(), timezone.utc)
+            day_end = day_start + timedelta(days=1)
+            if day_end > end:
+                day_end = end
+            bucket = daily.setdefault(
+                cur.isoformat(), {"succeeded": 0, "failed": 0, "other": 0},
+            )
+            touched = False
+            for api_name, bucket_key in statuses:
+                try:
+                    n = client.count_pipeline_runs(
+                        start=day_start, end=day_end, status=api_name,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.debug(
+                        "count_pipeline_runs[%s, %s] failed: %s",
+                        cur, api_name, exc,
+                    )
+                    continue
+                if n:
+                    bucket[bucket_key] += n
+                    touched = True
+            if touched:
+                backfilled_days += 1
+            self._progress.step(
+                1,
+                label=f"daily backfill {cur.isoformat()} ({remaining} day"
+                f"{'s' if remaining != 1 else ''} left)",
+            )
+        if backfilled_days:
+            log.info("Daily-status backfill populated %d days", backfilled_days)
 
 
 def _env_flag(name: str, *, default: bool) -> bool:

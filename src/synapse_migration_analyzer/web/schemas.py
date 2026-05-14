@@ -80,6 +80,16 @@ class StartRunRequest(BaseModel):
         description="Optional human label shown in the run history UI.",
         max_length=120,
     )
+    days: int | None = Field(
+        None,
+        description=(
+            "Global lookback window in days for analyzers that fetch run "
+            "history (pipelines, spark_pools, monitoring). When set, "
+            "overrides the per-analyzer SMA_*_DAYS env vars for this run."
+        ),
+        ge=1,
+        le=365,
+    )
 
 
 class StartRunResponse(BaseModel):
