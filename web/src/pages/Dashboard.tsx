@@ -1,4 +1,4 @@
-import { loadFabricMapping, loadPipelines, loadServerless, loadSparkPools, loadStorage, detectMode, getRunIdFromHash } from "../api/loader";
+import { loadFabricMapping, loadMonitoring, loadPipelines, loadServerless, loadSparkPools, loadStorage, detectMode, getRunIdFromHash } from "../api/loader";
 import { useAsync } from "../hooks/useAsync";
 import { Empty, PctPill, ScorePill, SeverityPill, StatCard } from "../components/Atoms";
 import HelpLink from "../components/HelpLink";
@@ -65,11 +65,12 @@ export default function Dashboard() {
   const { data: pipelines, loading: pipelinesLoading } = useAsync(loadPipelines);
   const { data: serverless, loading: serverlessLoading } = useAsync(loadServerless);
   const { data: sparkPools, loading: sparkLoading } = useAsync(loadSparkPools);
+  const { data: monitoring, loading: monitoringLoading } = useAsync(loadMonitoring);
   const { data: mode } = useAsync(detectMode);
   const runMeta = useCurrentRunMeta();
 
   const loading =
-    fmLoading || storageLoading || pipelinesLoading || serverlessLoading || sparkLoading;
+    fmLoading || storageLoading || pipelinesLoading || serverlessLoading || sparkLoading || monitoringLoading;
   if (loading) return <div className="empty">Loading…</div>;
 
   // Has *any* module produced data? If so, render the dashboard with the
@@ -82,6 +83,7 @@ export default function Dashboard() {
       || (pipelines?.run_history && pipelines.run_history.by_pipeline?.length)
       || (sparkPools && (sparkPools.pools?.length || sparkPools.run_stats?.length || sparkPools.spark_runs?.length))
       || (serverless && (serverless.databases?.length || serverless.daily_usage?.length))
+      || (monitoring && (monitoring.series?.length || monitoring.dwu_days?.length))
   );
 
   if (!hasAny) {
@@ -274,6 +276,7 @@ export default function Dashboard() {
         </section>
       )}
 
+      <DwuUtilizationSection monitoring={monitoring} runMeta={runMeta} />
       <StorageSection storage={storage} runMeta={runMeta} />
       <PipelinesSection pipelines={pipelines} runMeta={runMeta} />
       <SparkPoolsSection sparkPools={sparkPools} runMeta={runMeta} />
@@ -304,6 +307,372 @@ export default function Dashboard() {
         </section>
       )}
     </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// DWU utilization (Azure Monitor historical DWUUsedPercent per pool)
+// ---------------------------------------------------------------------------
+
+/**
+ * Severity-coloured DWU % badge. Unlike `PctPill` (which is calibrated for
+ * "higher is better" metrics like readiness score), high DWU % means
+ * the pool is saturated — so we invert the colour ramp.
+ */
+function DwuPctTag({ value }: { value: number | null }) {
+  if (value == null || !Number.isFinite(value)) return <span className="muted">—</span>;
+  const cls = value >= 90 ? "err" : value >= 70 ? "warn" : "ok";
+  return <span className={`pill ${cls}`}>{value.toFixed(0)}%</span>;
+}
+
+/**
+ * Renders a 7d (or whatever the monitoring window is) timeseries of
+ * `DWUUsedPercent` per dedicated SQL pool plus headline stats (peak %,
+ * p95 %, peak DWU, active hours). Reads `monitoring.json` directly — no
+ * backend changes needed, the monitoring module already collects this
+ * data via Azure Monitor (`DWUUsed`, `DWUUsedPercent`, `DWULimit`).
+ *
+ * Hides itself when no monitoring artefact exists for the current run
+ * (e.g. user skipped `--with monitoring`) or when no DWU series were
+ * returned (e.g. paused pools, missing Monitoring Reader RBAC).
+ */
+function DwuUtilizationSection({
+  monitoring,
+  runMeta,
+}: {
+  monitoring: import("../types").MonitoringReport | null;
+  runMeta?: import("../api/loader").RunMeta | null;
+}) {
+  if (!monitoring) return null;
+  const series = monitoring.series ?? [];
+  // We chart DWUUsedPercent (0–100, pool-size agnostic). Fall back to
+  // computing it from DWUUsed/DWULimit if the provider only returned the
+  // absolute metrics (older provider versions, custom retention pipelines).
+  const pctByPool = new Map<string, Array<[string, number | null]>>();
+  const limitByPool = new Map<string, number>();
+  const usedByPool = new Map<string, Array<[string, number | null]>>();
+  for (const s of series) {
+    if (s.resource_kind !== "dedicated_pool") continue;
+    if (s.metric_name === "DWUUsedPercent") {
+      pctByPool.set(s.resource_name, s.points ?? []);
+    } else if (s.metric_name === "DWULimit") {
+      // Use max value as the steady-state DWU limit (limit can change if
+      // someone scaled the pool inside the window — pick the recent peak
+      // so the badge reflects current sizing).
+      if (s.max_value != null) limitByPool.set(s.resource_name, s.max_value);
+    } else if (s.metric_name === "DWUUsed") {
+      usedByPool.set(s.resource_name, s.points ?? []);
+    }
+  }
+  // Synthesise % from absolutes when needed.
+  for (const [pool, used] of usedByPool) {
+    if (pctByPool.has(pool)) continue;
+    const lim = limitByPool.get(pool);
+    if (!lim || lim <= 0) continue;
+    pctByPool.set(
+      pool,
+      used.map(([t, v]) => [t, v == null ? null : (v / lim) * 100]),
+    );
+  }
+  const pools = Array.from(pctByPool.keys()).sort();
+  if (pools.length === 0) return null;
+
+  const windowStart = new Date(monitoring.window_start);
+  const windowEnd = new Date(monitoring.window_end);
+  const windowDays = Math.max(
+    1,
+    Math.round((windowEnd.getTime() - windowStart.getTime()) / 86_400_000),
+  );
+
+  // Per-pool stats (peak, p95, avg) over the chart window.
+  const stats = pools.map((pool) => {
+    const pts = pctByPool.get(pool) ?? [];
+    const vals = pts.map(([, v]) => v).filter((v): v is number => v != null && Number.isFinite(v));
+    const peak = vals.length ? Math.max(...vals) : null;
+    const avg = vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+    const sorted = vals.slice().sort((a, b) => a - b);
+    const p95 = sorted.length
+      ? sorted[Math.min(sorted.length - 1, Math.floor(0.95 * (sorted.length - 1)))]
+      : null;
+    const limit = limitByPool.get(pool) ?? null;
+    // Look up the corresponding dwu_days roll-up for active hours / peak DWU.
+    const days = (monitoring.dwu_days ?? []).filter((d) => d.pool_name === pool);
+    const activeHours = days.reduce((a, d) => a + (d.active_hours ?? 0), 0);
+    const peakDwu = days.length ? Math.max(...days.map((d) => d.peak_dwu ?? 0)) : null;
+    return { pool, peak, p95, avg, limit, activeHours, peakDwu };
+  });
+
+  // Headline cards: estate totals across all pools.
+  const overallPeak = stats.reduce<number | null>(
+    (acc, s) => (s.peak == null ? acc : Math.max(acc ?? 0, s.peak)),
+    null,
+  );
+  const overallP95 = (() => {
+    const all: number[] = [];
+    for (const pool of pools) {
+      const pts = pctByPool.get(pool) ?? [];
+      for (const [, v] of pts) if (v != null && Number.isFinite(v)) all.push(v);
+    }
+    if (!all.length) return null;
+    all.sort((a, b) => a - b);
+    return all[Math.min(all.length - 1, Math.floor(0.95 * (all.length - 1)))];
+  })();
+  const totalActiveHours = stats.reduce((a, s) => a + s.activeHours, 0);
+
+  return (
+    <section className="section">
+      <h2>
+        DWU utilization
+        <ProvenanceBadge meta={runMeta ?? null} module="monitoring" />
+      </h2>
+      <div className="small muted" style={{ marginBottom: 8 }}>
+        Azure Monitor <code>DWUUsedPercent</code> over the last {windowDays} day
+        {windowDays === 1 ? "" : "s"} ({monitoring.interval} samples) — one line
+        per dedicated SQL pool. Source: <code>monitoring.json</code>.
+      </div>
+
+      <div className="grid cols-4">
+        <StatCard
+          label="Peak DWU %"
+          value={overallPeak != null ? `${overallPeak.toFixed(0)}%` : "—"}
+          sub={`across ${pools.length} pool${pools.length === 1 ? "" : "s"}`}
+        />
+        <StatCard
+          label="P95 DWU %"
+          value={overallP95 != null ? `${overallP95.toFixed(0)}%` : "—"}
+          sub={`window ${windowDays}d · ${monitoring.interval}`}
+        />
+        <StatCard
+          label="Active hours"
+          value={totalActiveHours > 0 ? totalActiveHours.toFixed(1) : "—"}
+          sub={`pool-hours with DWU > 0`}
+        />
+        <StatCard
+          label="Pools observed"
+          value={pools.length}
+          sub={pools.length === 1 ? pools[0] : `${pools.slice(0, 3).join(", ")}${pools.length > 3 ? "…" : ""}`}
+        />
+      </div>
+
+      <DwuLineChart pools={pools} pctByPool={pctByPool} windowDays={windowDays} />
+
+      {stats.length > 0 && (
+        <table style={{ marginTop: 12 }}>
+          <thead>
+            <tr>
+              <th>Pool</th>
+              <th className="num">DWU limit</th>
+              <th className="num">Peak DWU</th>
+              <th className="num">Peak %</th>
+              <th className="num">P95 %</th>
+              <th className="num">Avg %</th>
+              <th className="num">Active hours</th>
+            </tr>
+          </thead>
+          <tbody>
+            {stats.map((s) => (
+              <tr key={s.pool}>
+                <td><code>{s.pool}</code></td>
+                <td className="num">{s.limit != null ? `DW${Math.round(s.limit)}c` : "—"}</td>
+                <td className="num">{s.peakDwu != null ? fmtNum(s.peakDwu) : "—"}</td>
+                <td className="num"><DwuPctTag value={s.peak ?? null} /></td>
+                <td className="num"><DwuPctTag value={s.p95 ?? null} /></td>
+                <td className="num">{s.avg != null ? `${s.avg.toFixed(0)}%` : "—"}</td>
+                <td className="num">{s.activeHours > 0 ? s.activeHours.toFixed(1) : "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </section>
+  );
+}
+
+/**
+ * Inline-SVG multi-line chart of DWU % over the monitoring window. One
+ * polyline per pool, plus a dashed 100 % reference. Same rendering
+ * conventions as DailyRunsChart so the dashboard stays visually
+ * consistent.
+ */
+function DwuLineChart({
+  pools,
+  pctByPool,
+  windowDays,
+}: {
+  pools: string[];
+  pctByPool: Map<string, Array<[string, number | null]>>;
+  windowDays: number;
+}) {
+  // Collect every (t, v) across all pools to find the global x-range.
+  const allTimes: number[] = [];
+  for (const pool of pools) {
+    for (const [t] of pctByPool.get(pool) ?? []) {
+      const ms = Date.parse(t);
+      if (Number.isFinite(ms)) allTimes.push(ms);
+    }
+  }
+  if (allTimes.length === 0) return null;
+  const tMin = Math.min(...allTimes);
+  const tMax = Math.max(...allTimes);
+  const tSpan = Math.max(1, tMax - tMin);
+
+  // Y axis: clamp to >= 100 so the reference line is always visible, and
+  // round up to nearest 25 so labels are tidy when DWU stays low.
+  const observedMax = (() => {
+    let m = 0;
+    for (const pool of pools) {
+      for (const [, v] of pctByPool.get(pool) ?? []) {
+        if (v != null && Number.isFinite(v) && v > m) m = v;
+      }
+    }
+    return m;
+  })();
+  const yMax = Math.max(100, Math.ceil(observedMax / 25) * 25);
+
+  // Layout — mirrors DailyRunsChart.
+  const width = 720;
+  const height = 240;
+  const padX = 56;
+  const padTop = 16;
+  const padBottom = 44;
+  const innerW = width - padX * 2;
+  const innerH = height - padTop - padBottom;
+
+  const xOf = (ms: number) => padX + ((ms - tMin) / tSpan) * innerW;
+  const yOf = (v: number) => padTop + innerH - (Math.max(0, Math.min(yMax, v)) / yMax) * innerH;
+
+  // 5 colours cycled — uses CSS variables so dark/light themes work.
+  const palette = [
+    "var(--accent)",
+    "var(--ok)",
+    "var(--warn)",
+    "var(--err)",
+    "var(--muted)",
+  ];
+
+  // Y ticks at 0, 25, 50, 75, 100 (and yMax if > 100).
+  const yTicks: number[] = [0, 25, 50, 75, 100];
+  if (yMax > 100) yTicks.push(yMax);
+
+  // X labels — show ~6 evenly spaced day boundaries within the window.
+  const labelCount = Math.min(6, Math.max(2, windowDays));
+  const xLabels: Array<{ x: number; label: string }> = [];
+  for (let i = 0; i < labelCount; i++) {
+    const ms = tMin + ((tMax - tMin) * i) / (labelCount - 1);
+    const d = new Date(ms);
+    xLabels.push({
+      x: xOf(ms),
+      label: `${d.getUTCMonth() + 1}/${d.getUTCDate()}`,
+    });
+  }
+
+  const axisColor = "var(--border)";
+  const textColor = "var(--muted)";
+
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div className="small muted" style={{ marginBottom: 4 }}>
+        DWU % over time per pool (100 % = DWU limit)
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <svg
+          width={width}
+          height={height}
+          role="img"
+          aria-label="Line chart of DWU utilization percent per pool over time"
+        >
+          {/* Y grid + tick labels */}
+          {yTicks.map((t, i) => {
+            const y = yOf(t);
+            const is100 = t === 100;
+            return (
+              <g key={i}>
+                <line
+                  x1={padX}
+                  x2={width - padX}
+                  y1={y}
+                  y2={y}
+                  stroke={is100 ? "var(--err)" : axisColor}
+                  strokeDasharray={t === 0 ? undefined : is100 ? "4,3" : "2,3"}
+                  opacity={is100 ? 0.7 : 1}
+                />
+                <text x={padX - 6} y={y + 3} textAnchor="end" fontSize={10} fill={textColor}>
+                  {t}%
+                </text>
+              </g>
+            );
+          })}
+
+          {/* X tick labels */}
+          {xLabels.map((l, i) => (
+            <text
+              key={i}
+              x={l.x}
+              y={height - padBottom + 14}
+              textAnchor="middle"
+              fontSize={10}
+              fill={textColor}
+            >
+              {l.label}
+            </text>
+          ))}
+
+          {/* One polyline per pool */}
+          {pools.map((pool, idx) => {
+            const color = palette[idx % palette.length];
+            const pts = pctByPool.get(pool) ?? [];
+            // Build path, breaking on null values so gaps render as gaps.
+            const segments: string[] = [];
+            let inSeg = false;
+            for (const [t, v] of pts) {
+              const ms = Date.parse(t);
+              if (!Number.isFinite(ms) || v == null || !Number.isFinite(v)) {
+                inSeg = false;
+                continue;
+              }
+              const x = xOf(ms).toFixed(2);
+              const y = yOf(v).toFixed(2);
+              segments.push(`${inSeg ? "L" : "M"}${x},${y}`);
+              inSeg = true;
+            }
+            if (segments.length === 0) return null;
+            return (
+              <path
+                key={pool}
+                d={segments.join(" ")}
+                fill="none"
+                stroke={color}
+                strokeWidth={1.5}
+                strokeLinejoin="round"
+                strokeLinecap="round"
+              >
+                <title>{pool}</title>
+              </path>
+            );
+          })}
+        </svg>
+      </div>
+      {pools.length > 1 && (
+        <div className="small muted" style={{ display: "flex", flexWrap: "wrap", gap: 14, marginTop: 4 }}>
+          {pools.map((pool, idx) => (
+            <span key={pool}>
+              <span
+                style={{
+                  display: "inline-block",
+                  width: 10,
+                  height: 10,
+                  background: palette[idx % palette.length],
+                  borderRadius: 2,
+                  marginRight: 4,
+                  verticalAlign: "middle",
+                }}
+              />
+              <code>{pool}</code>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

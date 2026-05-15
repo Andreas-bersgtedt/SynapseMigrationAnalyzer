@@ -647,6 +647,52 @@ export interface SecurityReport {
 }
 
 // ---------------------------------------------------------------------------
+// monitoring.json
+// ---------------------------------------------------------------------------
+
+/**
+ * A single Azure Monitor metric series for one resource (typically a
+ * dedicated SQL pool). `points` is an ordered list of
+ * `[ISO-8601 timestamp, value|null]` pairs sampled at `interval`.
+ */
+export interface MonitoringMetricSeries {
+  resource_id: string;
+  resource_kind: string; // "dedicated_pool"
+  resource_name: string; // pool name
+  metric_name: string;   // e.g. "DWUUsed", "DWUUsedPercent", "DWULimit"
+  unit?: string | null;
+  aggregation: string;   // "Average" | "Total" | "Maximum" | "Minimum"
+  interval: string;      // ISO-8601 duration, e.g. "PT1H"
+  points: Array<[string, number | null]>;
+  min_value?: number | null;
+  max_value?: number | null;
+  avg_value?: number | null;
+  p95_value?: number | null;
+}
+
+export interface MonitoringDwuDayStat {
+  pool_name: string;
+  day: string; // ISO-8601 date
+  active_hours: number;
+  active_dwu_hours: number;
+  peak_dwu: number;
+  peak_pct: number;
+}
+
+export interface MonitoringReport {
+  workspace_name?: string | null;
+  subscription_id?: string | null;
+  resource_group?: string | null;
+  generated_at: string;
+  window_start: string;
+  window_end: string;
+  interval: string;
+  series: MonitoringMetricSeries[];
+  dwu_days: MonitoringDwuDayStat[];
+  errors?: string[];
+}
+
+// ---------------------------------------------------------------------------
 // Estate Overview (control-plane: GET /api/estate)
 // ---------------------------------------------------------------------------
 

@@ -23,6 +23,7 @@ import type {
   EstateWorkspace,
   FabricMappingReport,
   GovernanceReport,
+  MonitoringReport,
   PipelinesReport,
   RunDelta,
   SecurityReport,
@@ -151,6 +152,8 @@ export const loadSparkPools = () => fetchJson<SparkPoolsReport>("spark_pools.jso
 
 export const loadServerless = () => fetchJson<ServerlessReport>("serverless_pools.json");
 
+export const loadMonitoring = () => fetchJson<MonitoringReport>("monitoring.json");
+
 export const loadCost = () => fetchJson<CostReport>("cost.json");
 
 export const loadGovernance = () => fetchJson<GovernanceReport>("governance.json");
@@ -180,6 +183,7 @@ const PROBE_MODULES: ReadonlyArray<string> = [
   "pipelines",
   "spark_pools",
   "serverless_pools",
+  "monitoring",
 ];
 
 let _availabilityProbe: Promise<Set<string>> | null = null;
@@ -229,6 +233,7 @@ export async function detectAvailableModules(): Promise<Set<string>> {
       ["pipelines", loadPipelines],
       ["spark_pools", loadSparkPools],
       ["serverless_pools", loadServerless],
+      ["monitoring", loadMonitoring],
     ];
     const results = await Promise.all(
       probes.map(async ([name, fn]) => {
