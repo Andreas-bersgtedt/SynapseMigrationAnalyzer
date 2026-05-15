@@ -15,14 +15,15 @@ workspace, today?" If you only have time for one page, it is this one.
 | Section          | JSON file              | Module          |
 | ---------------- | ---------------------- | --------------- |
 | Headline / blockers / inputs | `fabric_mapping.json` | `fabric_mapping` |
+| DWU utilization  | `monitoring.json`      | `monitoring`    |
 | Storage          | `storage.json`         | `storage`       |
 | Pipeline activity | `pipelines.json`      | `pipelines`     |
 | Serverless SQL   | `serverless_pools.json` | `serverless_pools` |
 
-The Storage, Pipeline-activity and Serverless SQL sections render only
-when their respective JSON files exist for the selected run. The
-headline cards require `fabric_mapping.json` — without it the page
-shows *Loading…* forever.
+The DWU utilization, Storage, Pipeline-activity and Serverless SQL
+sections render only when their respective JSON files exist for the
+selected run. The headline cards require `fabric_mapping.json` —
+without it the page shows *Loading…* forever.
 
 ## Layout
 
@@ -77,6 +78,38 @@ Inputs analyzed
 
 Filtered subset of `recommendations[]` with `severity = "blocker"`,
 sorted by area then id, capped at the top 5.
+
+### DWU utilization section
+
+Reads `monitoring.json`. Renders only when one or more dedicated SQL
+pools returned `DWUUsedPercent` series from Azure Monitor (or
+`DWUUsed` + `DWULimit`, from which the percent is synthesised).
+
+| Stat card          | Source                                              |
+| ------------------ | --------------------------------------------------- |
+| **Peak DWU %**     | `max(DWUUsedPercent.points[*].value)` across pools  |
+| **P95 DWU %**      | 95th percentile of every `DWUUsedPercent` sample    |
+| **Active hours**   | `Σ dwu_days[*].active_hours` (pool-hours with DWU > 0) |
+| **Pools observed** | distinct `resource_name`s in the DWU series         |
+
+The inline-SVG line chart plots one polyline per pool over the full
+monitoring window (`window_start → window_end`, sampled at `interval`,
+default 7 days @ `PT1H`). A dashed red line marks 100 % — anything
+touching it for sustained periods is a sign the pool is undersized.
+The Y axis auto-scales above 100 % when bursts exceed the limit.
+Nulls in the series render as gaps (not zeros).
+
+Per-pool table columns: pool name, DWU limit (e.g. `DW400c`), peak
+DWU (absolute), peak %, p95 %, avg %, active hours. The Peak % and
+P95 % pills use **inverted** severity colours vs. the rest of the SPA
+(red ≥ 90 %, amber ≥ 70 %, green otherwise) because high DWU usage
+means the pool is saturated, not healthy.
+
+If this section is missing despite running `sma analyze-monitoring`:
+the pool may have been paused for the entire window, or the calling
+identity lacks **Monitoring Reader** on the subscription / RG (see
+the collection-errors banner in `monitoring.html` for the underlying
+Azure Monitor error).
 
 ### Storage section
 

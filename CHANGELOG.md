@@ -6,6 +6,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-05-15
+
+### Added
+- **DWU utilization section on the run Dashboard.** A new section
+  between *Top blockers* and *Storage* plots historical
+  `DWUUsedPercent` per dedicated SQL pool over the monitoring window,
+  driven entirely by the existing `monitoring.json` artefact (no
+  backend changes). Headline stat cards show estate-wide peak DWU %,
+  p95 DWU %, total active hours and pools observed; an inline-SVG
+  multi-line chart (one polyline per pool, dashed 100 % reference,
+  auto Y-scale for >100 % bursts, gap handling for null samples,
+  colour-coded legend) renders without a chart library; a per-pool
+  table breaks out DWU limit, peak DWU, peak %, p95 %, avg % and
+  active hours. Severity colours are inverted vs. `PctPill` (90 % =
+  red, 70 % = amber) because high DWU % means *saturated*, not
+  *healthy*. The section auto-hides when the monitoring module didn't
+  run or returned no DWU series (paused pools, missing
+  `Monitoring Reader` RBAC). Also wired into the SPA's static-mode
+  module probe so the *Run* page state pill reflects monitoring
+  availability.
+
+### Frontend
+- `web/src/types.ts`: new `MonitoringMetricSeries`,
+  `MonitoringDwuDayStat`, `MonitoringReport` types mirroring the
+  pydantic `MonitoringAnalysis` model.
+- `web/src/api/loader.ts`: new `loadMonitoring()` plus probe entry.
+- `web/src/pages/Dashboard.tsx`: `DwuUtilizationSection`,
+  `DwuLineChart`, `DwuPctTag` components.
+
 ## [3.2.0] - 2026-05-14
 
 ### Added
