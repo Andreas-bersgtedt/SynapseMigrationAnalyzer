@@ -378,6 +378,25 @@ export async function apiDeleteRunData(id: string): Promise<{ deleted: boolean }
   return r.json() as Promise<{ deleted: boolean }>;
 }
 
+export interface DeleteAllRunsResult {
+  deleted: number;
+  cancelled: number;
+  total: number;
+  failed: string[];
+}
+
+export async function apiDeleteAllRuns(): Promise<DeleteAllRunsResult> {
+  const r = await fetch("/api/runs", {
+    method: "DELETE",
+    headers: API_HEADERS,
+  });
+  if (!r.ok) {
+    const detail = await r.text();
+    throw new Error(`DELETE /api/runs ${r.status}: ${detail}`);
+  }
+  return r.json() as Promise<DeleteAllRunsResult>;
+}
+
 export async function apiGetConfig(): Promise<AppConfig> {
   const r = await fetch("/api/config");
   if (!r.ok) throw new Error(`/api/config: HTTP ${r.status}`);

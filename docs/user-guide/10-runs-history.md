@@ -75,11 +75,27 @@ Three common reasons:
 Click **Delete** on the row, confirm the prompt, and the run folder
 is removed via `DELETE /api/runs/{id}/data`. The list refreshes
 automatically. Active runs (`queued` / `running`) cannot be deleted
-— cancel them first.
+per-row — cancel them first.
 
 The analyzer never deletes runs automatically; deleting in the UI is
 the equivalent of `Remove-Item -Recurse output/runs/<id>` and is
 irreversible.
+
+### "Wipe everything, including stalled runs"
+
+Use the **Delete all runs** button above the table. It calls
+`DELETE /api/runs`, which:
+
+1. Best-effort cancels every run still flagged `queued` or `running`
+   (this handles stalled runs left behind by a server restart that
+   never transitioned out of `running`).
+2. Force-deletes every run directory on disk regardless of status.
+3. Returns a count of how many were deleted and how many stalled
+   runs were cancelled, which the page surfaces in the status line.
+
+You must type `DELETE ALL` into the confirmation prompt — the action
+is irreversible. The currently selected run is also cleared from the
+URL hash so other pages stop trying to load a deleted run.
 
 ## Empty / error states
 

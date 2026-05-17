@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import {
+  apiDeleteAllRuns,
   apiDeleteRunData,
   apiListRuns,
   getRunIdFromHash,
@@ -13,6 +14,7 @@ export default function RunsHistory(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [actionMsg, setActionMsg] = useState<string | null>(null);
+  const [purgingAll, setPurgingAll] = useState(false);
 
   useEffect(() => {
     apiListRuns(50).then(setRuns).catch((e: Error) => setError(e.message));
@@ -59,9 +61,49 @@ export default function RunsHistory(): JSX.Element {
     }
   };
 
+  const onDeleteAll = async () => {
+    const answer = window.prompt(
+      "This will permanently delete EVERY run on disk, including any " +
+        "stalled runs still marked as running. Type DELETE ALL to confirm.",
+    );
+    if (answer !== "DELETE ALL") {
+      return;
+    }
+    setPurgingAll(true);
+    setActionMsg(null);
+    try {
+      const result = await apiDeleteAllRuns();
+      setRunIdInHash(null);
+      const fresh = await apiListRuns(50);
+      setRuns(fresh);
+      const failedNote =
+        result.failed.length > 0 ? ` (failed: ${result.failed.join(", ")})` : "";
+      setActionMsg(
+        `Deleted ${result.deleted}/${result.total} run(s); ` +
+          `cancelled ${result.cancelled} stalled${failedNote}.`,
+      );
+    } catch (e) {
+      setActionMsg(`Delete-all failed: ${(e as Error).message}`);
+    } finally {
+      setPurgingAll(false);
+    }
+  };
+
   return (
     <section className="page">
       <h1>Runs <HelpLink slug="10-runs-history" /></h1>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+        <button
+          onClick={onDeleteAll}
+          disabled={purgingAll}
+          title="Permanently delete every run on disk, including stalled runs still marked as running."
+        >
+          {purgingAll ? "Deleting all…" : "Delete all runs"}
+        </button>
+        <span className="muted small">
+          Includes stalled runs that never finished.
+        </span>
+      </div>
       {actionMsg && <p className="muted">{actionMsg}</p>}
       <table className="table">
         <thead>

@@ -150,6 +150,20 @@ the API restarts.
 | Firewall blocks the analyzer host. | Add the host's outbound IP to the workspace SQL firewall. |
 | AAD login disabled / no Synapse SQL user. | `CREATE USER [<sp-name>] FROM EXTERNAL PROVIDER;` on the pool, plus role membership. |
 
+### "Dedicated SQL pools module shows 'Pool status is …; skipped DMV collection'"
+
+Starting in **3.4.0**, the dedicated pools analyzer skips any pool
+whose status is not `Online` (paused, pausing, resuming, scaling,
+creating, deleting, recovering, restoring, disabled, inaccessible)
+instead of failing the module. The pool's inventory row is still
+captured; the per-pool error list records why DMV collection was
+skipped. Resume / wait for the transition to complete and rerun the
+module to pick up the data-plane details. The same skip-with-warning
+also kicks in if the AAD login fails unexpectedly mid-run (for example
+when the pool transitions out of `Online` between the ARM listing and
+the SQL connect — visible as a `28000 / 18456 Login failed` ODBC
+error).
+
 ---
 
 ## Performance issues

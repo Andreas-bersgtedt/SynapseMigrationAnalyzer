@@ -30,6 +30,15 @@ from .sql_client import DedicatedPoolSqlClient
 
 log = logging.getLogger(__name__)
 
+# Pool states for which the dedicated SQL endpoint will reject AAD logins.
+# Anything other than "Online" means DMV collection cannot run; we skip the
+# data-plane work and surface a warning instead of failing the module.
+_NON_ONLINE_STATUSES = {
+    "paused", "pausing", "resuming", "scaling",
+    "creating", "deleting", "recovering", "restoring",
+    "disabled", "inaccessible",
+}
+
 
 def _pool_concurrency() -> int:
     """How many dedicated pools to analyze in parallel.
@@ -89,16 +98,42 @@ class DedicatedPoolsAnalyzer:
         analysis = PoolAnalysis(inventory=inventory)
         pool_name = inventory.name
 
-        # Skip data-plane collection if pool is paused.
-        if (inventory.status or "").lower() == "paused":
-            analysis.errors.append("Pool is paused; skipped DMV collection.")
+        # Skip data-plane collection if pool is not online (paused, scaling,
+        # resuming, etc.). The SQL endpoint rejects AAD logins in these states.
+        status_norm = (inventory.status or "").lower()
+        if status_norm and status_norm != "online":
+            if status_norm in _NON_ONLINE_STATUSES:
+                msg = f"Pool status is '{inventory.status}'; skipped DMV collection."
+            else:
+                msg = (
+                    f"Pool status is '{inventory.status}' (not Online); "
+                    "skipped DMV collection."
+                )
+            log.warning("%s: %s", pool_name, msg)
+            analysis.errors.append(msg)
             # Still consume the 15 budgeted steps so totals stay accurate.
-            self._progress.step(15, label=f"{pool_name} (paused)")
+            self._progress.step(15, label=f"{pool_name} ({inventory.status})")
             return analysis
 
         sql = DedicatedPoolSqlClient(self._cfg, server, inventory.name)
-        # One persistent connection for all DMV queries on this pool.
-        with sql.session():
+        # One persistent connection for all DMV queries on this pool. If the
+        # pool transitioned out of Online between the ARM list call and now
+        # (or AAD login fails for any other reason), treat it as a skip with
+        # a warning so the rest of the analyzer run can complete.
+        try:
+            session_cm = sql.session()
+            session_cm.__enter__()
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "Could not open SQL session for pool %s: %s", pool_name, exc,
+            )
+            analysis.errors.append(
+                f"connect: pool unreachable, skipped DMV collection ({exc})"
+            )
+            self._progress.step(15, label=f"{pool_name} (unreachable)")
+            return analysis
+
+        try:
             for label, fn, target in (
                 ("schemas", collect_schemas, "schemas"),
                 ("tables", collect_tables, "tables"),
@@ -123,6 +158,11 @@ class DedicatedPoolsAnalyzer:
                     analysis.errors.append(f"{label}: {exc}")
                 finally:
                     self._progress.step(label=f"{pool_name}/{label}")
+        finally:
+            try:
+                session_cm.__exit__(None, None, None)
+            except Exception:  # noqa: BLE001
+                log.debug("Error closing SQL session for pool %s", pool_name, exc_info=True)
 
         # Distribution-key advisor — pure-python over what we already collected.
         try:

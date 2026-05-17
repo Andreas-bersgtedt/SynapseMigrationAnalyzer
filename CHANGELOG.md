@@ -6,6 +6,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.4.0] - 2026-05-17
+
+### Added
+- **"Delete all runs" button on the Runs page.** New
+  `DELETE /api/runs` endpoint best-effort cancels every run still
+  flagged `queued`/`running` (this picks up stalled runs left behind
+  by a server restart whose meta never transitioned out of `running`)
+  and force-deletes every run directory on disk regardless of status.
+  The UI surfaces the action above the runs table behind a typed
+  `DELETE ALL` confirmation, reports how many runs were deleted and
+  how many stalled entries were cancelled, and clears the active-run
+  hash so other pages stop loading a deleted run.
+  - `web/src/api/loader.ts`: new `apiDeleteAllRuns()` helper plus
+    `DeleteAllRunsResult` type.
+  - `web/src/pages/RunsHistory.tsx`: top-of-page action row with
+    busy state and result message.
+  - `src/synapse_migration_analyzer/web/api/runs.py`: `delete_all_runs`
+    handler ordered before `/{run_id}` to avoid path-param collision.
+
+### Fixed
+- **Dedicated SQL pools analyzer no longer aborts when a pool is not
+  online.** Previously only `status == "paused"` was skipped; pools
+  in `Pausing`, `Resuming`, `Scaling`, `Creating`, `Deleting`,
+  `Recovering`, `Restoring`, `Disabled`, or `Inaccessible` states
+  raised a `28000 / 18456 Login failed for user '<token-identified
+  principal>'` ODBC error that killed the whole module. The analyzer
+  now skips any non-`Online` pool with a per-pool warning recorded on
+  `analysis.errors`, still consumes the budgeted progress steps, and
+  continues with the rest of the run. A try/except around
+  `sql.session()` also catches unexpected login failures (e.g. the
+  pool transitions out of `Online` between the ARM listing and the
+  SQL connect) and turns them into a skip rather than a hard failure.
+
 ## [3.3.0] - 2026-05-15
 
 ### Added
