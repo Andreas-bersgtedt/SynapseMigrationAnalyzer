@@ -18,12 +18,37 @@ workspace, today?" If you only have time for one page, it is this one.
 | DWU utilization  | `monitoring.json`      | `monitoring`    |
 | Storage          | `storage.json`         | `storage`       |
 | Pipeline activity | `pipelines.json`      | `pipelines`     |
+| Spark pools      | `spark_pools.json`     | `spark_pools`   |
 | Serverless SQL   | `serverless_pools.json` | `serverless_pools` |
 
-The DWU utilization, Storage, Pipeline-activity and Serverless SQL
-sections render only when their respective JSON files exist for the
-selected run. The headline cards require `fabric_mapping.json` —
-without it the page shows *Loading…* forever.
+The DWU utilization, Storage, Pipeline-activity, Spark-pools and
+Serverless SQL sections render only when their respective JSON files
+exist for the selected run. The headline cards require
+`fabric_mapping.json` — without it the page shows *Loading…* forever.
+
+### Re-analyze buttons (control plane only)
+
+The DWU utilization, Pipeline activity, Spark pools and Serverless SQL
+section headers each expose a **Re-analyze** button (control-plane mode
+only). Clicking it kicks off a targeted analyzer run for just that
+workload module (plus `fabric_mapping` so the top-line readiness/cost
+stays fresh) using the same window length as the section’s charts.
+Progress is streamed via SSE; once the run finishes the page auto-
+reloads onto the new run. Other modules carry forward from the prior
+run, so partial re-runs are safe.
+
+### 28-day vs 24-hour charts
+
+DWU utilization, Pipeline activity, Spark pools and Serverless SQL each
+render two charts side-by-side:
+
+- **Left** — 28-day window for trending.
+- **Right** — last 24 hours bucketed by hour, anchored to the top of
+  the current UTC hour, for spotting today’s activity.
+
+The 24h chart pre-seeds 24 empty bins so it always shows a full window
+even when the source data is sparse. Older runs that pre-date hourly
+bucketing render an empty-state hint inviting a Re-analyze.
 
 ## Layout
 
@@ -97,7 +122,10 @@ monitoring window (`window_start → window_end`, sampled at `interval`,
 default 7 days @ `PT1H`). A dashed red line marks 100 % — anything
 touching it for sustained periods is a sign the pool is undersized.
 The Y axis auto-scales above 100 % when bursts exceed the limit.
-Nulls in the series render as gaps (not zeros).
+Nulls in the series render as gaps (not zeros). A 24h companion chart
+to the right of the main chart re-renders the same series for just the
+trailing 24 hours so you can see today’s utilisation against the same
+100 % marker.
 
 Per-pool table columns: pool name, DWU limit (e.g. `DW400c`), peak
 DWU (absolute), peak %, p95 %, avg %, active hours. The Peak % and
@@ -136,6 +164,33 @@ Top-10 table columns: pipeline name, runs/day (`run_count / 7`),
 succeeded count, failed count, average data moved per run, total data
 moved in the window, and a last-run timestamp + status pill.
 
+Below the table, two stacked-bar charts render side-by-side:
+
+- **Daily runs (28 days)** — reads `run_history.daily_status`, stacks
+  succeeded / failed / other per day.
+- **Hourly runs (last 24h)** — reads `run_history.hourly_status`
+  (ISO-hour-keyed bins populated by the analyzer from the same in-memory
+  run list). Empty bins are pre-seeded so the chart always shows 24
+  hours. Older runs without `hourly_status` show an empty-state hint.
+
+### Spark pools section
+
+Reads `spark_pools.json`. Renders only when one or more Apache Spark
+pools returned run history.
+
+| Stat card                | Source                                                 |
+| ------------------------ | ------------------------------------------------------ |
+| **vCore-hours / day**    | `Σ run_history.daily_vcore_hours / N`                  |
+| **Active pools**         | distinct pools with runs in the window                 |
+| **Success rate**         | succeeded / (succeeded + failed) across all pools      |
+
+Two stacked-bar charts render side-by-side:
+
+- **Daily vCore-hours (28 days)** — per-pool stacked daily totals.
+- **Hourly vCore-hours (last 24h)** — 24 bins anchored to the top of
+  the current local hour, per-pool stacked, sharing the same palette
+  as the daily chart.
+
 ### Serverless SQL section
 
 Reads `serverless_pools.json`. When `daily_usage` is non-empty:
@@ -147,9 +202,18 @@ Reads `serverless_pools.json`. When `daily_usage` is non-empty:
 | **Avg query data size**    | `total_data_scanned / total_requests`                  |
 | **Estimated cost**         | `cost_estimate.estimated_cost_usd` (sub-text shows TB scanned and the list price per TB) |
 
-Below the cards an inline-SVG **clustered bar chart** plots the last 7
-days — one bar per day for queries (left axis, blue) and one for MB
-scanned (right axis, orange). Hover a bar for the exact daily value.
+Below the cards two inline-SVG **clustered bar charts** render
+side-by-side:
+
+- **Daily (last 28 days)** — one bar per day for queries (left axis,
+  blue) and one for MB scanned (right axis, orange). Read from
+  `daily_usage[]`.
+- **Hourly (last 24h)** — same shape, but 24 hourly bins anchored to
+  the top of the current UTC hour. Read from `hourly_usage[]` (populated
+  by `data_processed_hourly.sql`). Older runs without `hourly_usage`
+  show an empty-state hint.
+
+Hover a bar for the exact value.
 
 When `daily_usage` is empty, the section instead shows database and
 external-table counts plus a hint: `sys.dm_exec_requests_history` only
@@ -192,11 +256,12 @@ analyzer also surfaces a recommendation for it (see
 - *Loading…* — `fabric_mapping.json` is being fetched.
 - *No fabric_mapping data* — file is missing. Run
   `sma analyze-all` or `sma map-to-fabric`.
-- The Storage / Pipeline-activity / Serverless SQL sections silently
-  disappear when their JSON is absent or the corresponding arrays are
-  empty (Serverless SQL only hides when there are no databases, no
-  external tables **and** no `daily_usage` rows — a partially-populated
-  report still renders the inventory tiles plus the permissions hint).
+- The Storage / Pipeline-activity / Spark-pools / Serverless SQL
+  sections silently disappear when their JSON is absent or the
+  corresponding arrays are empty (Serverless SQL only hides when there
+  are no databases, no external tables **and** no `daily_usage` rows —
+  a partially-populated report still renders the inventory tiles plus
+  the permissions hint).
 
 ## Related
 

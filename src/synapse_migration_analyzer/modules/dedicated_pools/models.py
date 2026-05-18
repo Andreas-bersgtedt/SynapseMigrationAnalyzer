@@ -228,16 +228,44 @@ class TopQuery(BaseModel):
 class TopConsumedObject(BaseModel):
     """A table or view that appears frequently in recent workload SQL.
 
-    Derived by tokenizing the command text in ``sys.dm_pdw_sql_requests``
-    and joining the two-part ``schema.object`` tokens to
-    ``INFORMATION_SCHEMA.TABLES`` / ``.VIEWS`` so only real, resolvable
-    objects are counted. ``usage_count`` is the number of request-token
-    matches in the DMV's rolling window — treat it as a *relative* heat
-    signal, not an absolute query count.
+    Derived by parsing the submitted command text from
+    ``sys.dm_pdw_exec_requests`` with sqlglot and resolving each
+    referenced table/view against ``INFORMATION_SCHEMA``. Results are
+    persisted in a per-pool on-disk cache (default 30-day TTL) so the
+    DMV's rolling-buffer roll-off doesn't gut visibility across runs.
+
+    ``usage_count`` is the number of distinct requests that touched the
+    object inside the cache window. ``elapsed_time_ms`` is the sum of
+    ``total_elapsed_time`` for those requests — typically the more
+    useful "where does the pool actually spend time" signal.
+
+    ``match_kind`` indicates how the reference was resolved:
+        * ``qualified``            — schema.name match in the catalog
+        * ``unqualified-resolved`` — 1-part name with exactly one owner
+        * ``ambiguous``            — 1-part name that exists in >1 schema
     """
     object_name: str
     object_type: str  # "table" | "view"
     usage_count: int
+    elapsed_time_ms: int = 0
+    match_kind: str = "qualified"
+
+
+class WorkloadCaptureStats(BaseModel):
+    """Health/coverage signal for the top-consumed-tables collector.
+
+    These numbers tell the reader how trustworthy the ranking is —
+    e.g. a run with 4900 DMV rows but 0 parsed_ok almost certainly hit
+    a sqlglot bug and the ranking should be ignored.
+    """
+    dmv_rows: int = 0
+    parsed_ok: int = 0
+    parsed_failed: int = 0
+    parsed_empty: int = 0
+    cache_requests_total: int = 0
+    cache_window_days: int = 30
+    oldest_cache_entry: datetime | None = None
+    newest_cache_entry: datetime | None = None
 
 
 class PoolAnalysis(BaseModel):
@@ -259,6 +287,7 @@ class PoolAnalysis(BaseModel):
     code_object_summary: CodeObjectSummary | None = None
     top_queries: list[TopQuery] = Field(default_factory=list)
     top_consumed_objects: list[TopConsumedObject] = Field(default_factory=list)
+    workload_capture_stats: WorkloadCaptureStats | None = None
     errors: list[str] = Field(default_factory=list)
 
 

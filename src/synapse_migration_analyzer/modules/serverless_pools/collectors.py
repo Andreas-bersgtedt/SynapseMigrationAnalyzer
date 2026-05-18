@@ -13,6 +13,7 @@ from .models import (
     ServerlessCostEstimate,
     ServerlessDailyUsage,
     ServerlessDatabase,
+    ServerlessHourlyUsage,
     ServerlessTopQuery,
     ServerlessUsageStat,
 )
@@ -144,6 +145,42 @@ def collect_daily_usage(sql: ServerlessSqlClient) -> list[ServerlessDailyUsage]:
             duration_seconds=int(r.get("duration_seconds") or 0),
             mb_seconds=int(r.get("mb_seconds") or 0),
         ))
+    return out
+
+
+def collect_hourly_usage(sql: ServerlessSqlClient) -> list[ServerlessHourlyUsage]:
+    """Per-UTC-hour usage rollup over the trailing 24 hours.
+
+    Mirrors :func:`collect_daily_usage` but at hourly granularity. The
+    query returns at most 24 rows so the chart can pre-seed empty bins
+    on the frontend without overloading the SQL endpoint.
+    """
+    rows = sql.fetch_query_file("data_processed_hourly")
+    out: list[ServerlessHourlyUsage] = []
+    for r in rows:
+        hour = r.get("hour")
+        if hasattr(hour, "isoformat"):
+            try:
+                hour_utc = (
+                    hour.replace(tzinfo=timezone.utc)
+                    if hour.tzinfo is None
+                    else hour.astimezone(timezone.utc)
+                )
+                hour_iso = hour_utc.isoformat().replace("+00:00", "Z")
+            except Exception:  # noqa: BLE001
+                hour_iso = str(hour)
+        else:
+            hour_iso = str(hour)
+        out.append(ServerlessHourlyUsage(
+            hour=hour_iso,
+            request_count=int(r.get("request_count") or 0),
+            data_processed_mb=int(r.get("data_processed_mb") or 0),
+            duration_seconds=int(r.get("duration_seconds") or 0),
+            mb_seconds=int(r.get("mb_seconds") or 0),
+        ))
+    # Sort chronologically so the chart reads left-to-right without a
+    # frontend resort step.
+    out.sort(key=lambda u: u.hour)
     return out
 
 

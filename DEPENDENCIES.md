@@ -31,6 +31,7 @@ Declared under `[project].dependencies` in [pyproject.toml](pyproject.toml).
 | [jinja2](https://pypi.org/project/Jinja2/) | `>=3.1` | HTML report templating. | BSD-3-Clause | https://github.com/pallets/jinja |
 | [python-dotenv](https://pypi.org/project/python-dotenv/) | `>=1.0` | Loads `.env` configuration in [config.py](src/synapse_migration_analyzer/config.py). | BSD-3-Clause | https://github.com/theskumar/python-dotenv |
 | [six](https://pypi.org/project/six/) | `>=1.16` | Transitive dep retained explicitly because some `azure-mgmt-synapse` model paths still import it. | MIT | https://github.com/benjaminp/six |
+| [sqlglot](https://pypi.org/project/sqlglot/) | `>=23.0` | AST-based T-SQL parser used by the dedicated-pool "top consumed tables" collector to resolve referenced tables / views in submitted workload commands. | MIT | https://github.com/tobymao/sqlglot |
 
 ## Development dependencies (Python)
 

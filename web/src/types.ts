@@ -11,6 +11,7 @@
 
 export type Severity = "blocker" | "warning" | "info";
 export type Effort = "high" | "medium" | "low";
+export type Impact = "high" | "medium" | "low" | "unknown";
 export type Compatibility = "compatible" | "needs_review" | "incompatible";
 
 // ---------------------------------------------------------------------------
@@ -26,6 +27,9 @@ export interface Recommendation {
   target?: string | null;
   detail: string;
   fabric_action?: string | null;
+  // v2.11 — business-impact axis. Optional so older artefacts deserialise.
+  impact?: Impact;
+  impact_detail?: string | null;
 }
 
 export interface ReadinessSummary {
@@ -88,6 +92,13 @@ export interface PhaseEffortSummary {
   step_count: number;
   p50_days?: number | null;
   p90_days?: number | null;
+  // v2.11 — critical-path projection within a phase.
+  parallel_p50_hours?: number | null;
+  parallel_p90_hours?: number | null;
+  parallel_p50_days?: number | null;
+  parallel_p90_days?: number | null;
+  max_step_p50_hours?: number | null;
+  max_step_p90_hours?: number | null;
 }
 
 export interface EffortSummary {
@@ -98,6 +109,12 @@ export interface EffortSummary {
   per_phase: PhaseEffortSummary[];
   card_source: string;
   card_version: number;
+  // v2.11 — project-level critical-path projection.
+  parallel_p50_hours?: number | null;
+  parallel_p90_hours?: number | null;
+  parallel_p50_days?: number | null;
+  parallel_p90_days?: number | null;
+  parallel_workers?: number | null;
 }
 
 export interface ModuleSummary {
@@ -190,6 +207,7 @@ export interface PoolAnalysis {
   code_object_summary?: CodeObjectSummary | null;
   top_queries?: DedicatedTopQuery[];
   top_consumed_objects?: DedicatedTopConsumedObject[];
+  workload_capture_stats?: WorkloadCaptureStats | null;
   errors?: string[];
 }
 
@@ -211,13 +229,35 @@ export interface DedicatedTopQuery {
 
 /**
  * A table or view that appears frequently in recent workload SQL on a
- * dedicated SQL pool. Derived from `sys.dm_pdw_sql_requests`; counts are a
- * relative heat signal, not an absolute query count.
+ * dedicated SQL pool. Derived by parsing the submitted command text
+ * from `sys.dm_pdw_exec_requests` with sqlglot and resolving each
+ * referenced object against `INFORMATION_SCHEMA`. Aggregated across a
+ * rolling on-disk workload cache (default 30-day window).
+ *
+ * `match_kind` indicates how the reference resolved:
+ *   - `qualified`            — schema.name match in the catalog
+ *   - `unqualified-resolved` — 1-part name with exactly one owner
+ *   - `ambiguous`            — 1-part name found in >1 schema (treat
+ *                              counts as a suspect cluster, not a fact)
  */
 export interface DedicatedTopConsumedObject {
   object_name: string;
   object_type: string;
   usage_count: number;
+  elapsed_time_ms?: number;
+  match_kind?: "qualified" | "unqualified-resolved" | "ambiguous";
+}
+
+/** Coverage / health stats for the top-consumed-tables ranking. */
+export interface WorkloadCaptureStats {
+  dmv_rows: number;
+  parsed_ok: number;
+  parsed_failed: number;
+  parsed_empty: number;
+  cache_requests_total: number;
+  cache_window_days: number;
+  oldest_cache_entry?: string | null;
+  newest_cache_entry?: string | null;
 }
 
 export interface DedicatedPoolsReport {
@@ -353,6 +393,13 @@ export interface PipelineRunHistory {
    * succeeded / failed / other (in-progress, cancelled, queued).
    */
   daily_status?: Record<string, { succeeded: number; failed: number; other: number }>;
+  /**
+   * Per-UTC-hour rollup of run outcomes covering the trailing 24 hours
+   * of the window. Keys are ISO hour strings (YYYY-MM-DDTHH:00:00Z);
+   * values count succeeded / failed / other. Powers the 24h companion
+   * chart on the dashboard.
+   */
+  hourly_status?: Record<string, { succeeded: number; failed: number; other: number }>;
 }
 
 export interface PipelinesReport {
@@ -445,6 +492,14 @@ export interface ServerlessDailyUsage {
   mb_seconds?: number;
 }
 
+export interface ServerlessHourlyUsage {
+  hour: string;                 // ISO UTC hour, e.g. "2026-05-18T14:00:00Z"
+  request_count: number;
+  data_processed_mb: number;
+  duration_seconds?: number;
+  mb_seconds?: number;
+}
+
 export interface ServerlessCostEstimate {
   window_days: number;
   total_data_processed_tb: number;
@@ -472,6 +527,7 @@ export interface ServerlessReport {
   databases?: Array<{ name: string }>;
   external_tables?: Array<unknown>;
   daily_usage?: ServerlessDailyUsage[];
+  hourly_usage?: ServerlessHourlyUsage[];
   top_queries?: ServerlessTopQuery[];
   cost_estimate?: ServerlessCostEstimate | null;
   errors?: string[];

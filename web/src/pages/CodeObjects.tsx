@@ -18,6 +18,7 @@ import type {
   DedicatedTopConsumedObject,
   DedicatedTopQuery,
   TsqlSurfaceGap,
+  WorkloadCaptureStats,
 } from "../types";
 
 interface Row extends CodeObject {
@@ -139,6 +140,7 @@ export default function CodeObjects() {
   const types = Array.from(new Set(rows.map((r) => r.object_type))).sort();
   const dedicatedTopRows: TopQueryRow[] = [];
   const consumedRows: ConsumedObjectRow[] = [];
+  const captureStats: Array<{ pool: string; stats: WorkloadCaptureStats }> = [];
   if (data) {
     for (const p of data.pools) {
       for (const q of p.top_queries ?? []) {
@@ -147,9 +149,18 @@ export default function CodeObjects() {
       for (const o of p.top_consumed_objects ?? []) {
         consumedRows.push({ ...o, pool: p.inventory.name });
       }
+      if (p.workload_capture_stats) {
+        captureStats.push({ pool: p.inventory.name, stats: p.workload_capture_stats });
+      }
     }
   }
-  consumedRows.sort((a, b) => b.usage_count - a.usage_count);
+  // Default ranking: elapsed time desc (more meaningful than raw count for
+  // sizing migration priorities). The table itself lets the user toggle.
+  consumedRows.sort(
+    (a, b) =>
+      (b.elapsed_time_ms ?? 0) - (a.elapsed_time_ms ?? 0) ||
+      b.usage_count - a.usage_count,
+  );
 
   return (
     <>
@@ -267,13 +278,15 @@ export default function CodeObjects() {
           </summary>
           <div style={{ paddingTop: 12 }}>
             <p className="muted small" style={{ marginTop: 0 }}>
-              Tokens from <code>sys.dm_pdw_sql_requests</code> resolved against{" "}
-              <code>INFORMATION_SCHEMA.TABLES</code> / <code>.VIEWS</code>. Usage count
-              is a relative heat signal (rolling DMV window), not an absolute query
-              count — useful for picking the first tables to migrate / materialize in
-              Fabric.
+              Commands captured from <code>sys.dm_pdw_exec_requests</code> and
+              parsed with sqlglot; each resolved table is cross-checked against{" "}
+              <code>INFORMATION_SCHEMA</code>. Results are persisted in a per-pool
+              workload cache (default 30-day window) so the DMV's rolling buffer
+              doesn't gut the ranking between runs. Rank by elapsed time for
+              "where does the pool spend time" or by usage count for "what gets
+              touched the most".
             </p>
-            <TopConsumedObjectsTable rows={consumedRows} />
+            <TopConsumedObjectsTable rows={consumedRows} captureStats={captureStats} />
           </div>
         </details>
       )}
@@ -521,32 +534,81 @@ function previewSql(text: string | null | undefined): string {
 }
 
 /**
- * Compact table for the "top consumed tables / views" section. Defaults to
- * the top 10 rows (matching what the user asked for on the SQL Surface page)
- * with a "Show more" button to walk through the rest, plus a free-text filter
- * for triage on busy workspaces.
+ * Compact table for the "top consumed tables / views" section.
+ *
+ * Defaults to top 10 rows ranked by elapsed time (more meaningful for
+ * sizing Fabric capacity than a raw "this name appeared the most"
+ * count). The user can toggle to count-based ranking, filter by name /
+ * pool, and walk through additional rows with "Show more".
+ *
+ * Each row carries a `match_kind` badge so the user can tell which
+ * counts came from clean 2-part-qualified references vs. heuristic
+ * 1-part resolution. Below the table we surface the per-pool capture
+ * stats (DMV row count, parse success/fail, cache window) so the
+ * reader can judge whether the ranking is trustworthy.
  */
-function TopConsumedObjectsTable({ rows }: { rows: ConsumedObjectRow[] }): JSX.Element {
+function TopConsumedObjectsTable({
+  rows,
+  captureStats,
+}: {
+  rows: ConsumedObjectRow[];
+  captureStats: Array<{ pool: string; stats: WorkloadCaptureStats }>;
+}): JSX.Element {
   const [filter, setFilter] = useState("");
   const [limit, setLimit] = useState(10);
+  const [rankBy, setRankBy] = useState<"elapsed" | "count">("elapsed");
 
   const q = filter.trim().toLowerCase();
   const filtered = q
     ? rows.filter((r) =>
-        `${r.object_name} ${r.object_type} ${r.pool}`.toLowerCase().includes(q),
+        `${r.object_name} ${r.object_type} ${r.pool} ${r.match_kind ?? ""}`
+          .toLowerCase()
+          .includes(q),
       )
     : rows;
-  const visible = filtered.slice(0, limit);
-  const maxUsage = Math.max(1, ...visible.map((r) => r.usage_count));
+
+  const sorted = useMemo(() => {
+    const arr = [...filtered];
+    if (rankBy === "elapsed") {
+      arr.sort(
+        (a, b) =>
+          (b.elapsed_time_ms ?? 0) - (a.elapsed_time_ms ?? 0) ||
+          b.usage_count - a.usage_count,
+      );
+    } else {
+      arr.sort(
+        (a, b) =>
+          b.usage_count - a.usage_count ||
+          (b.elapsed_time_ms ?? 0) - (a.elapsed_time_ms ?? 0),
+      );
+    }
+    return arr;
+  }, [filtered, rankBy]);
+
+  const visible = sorted.slice(0, limit);
+  const maxValue =
+    rankBy === "elapsed"
+      ? Math.max(1, ...visible.map((r) => r.elapsed_time_ms ?? 0))
+      : Math.max(1, ...visible.map((r) => r.usage_count));
 
   return (
     <>
-      <div className="toolbar" style={{ marginBottom: 8 }}>
+      <div className="toolbar" style={{ marginBottom: 8, gap: 8 }}>
         <input
-          placeholder="Filter (schema.object, type, pool)"
+          placeholder="Filter (schema.object, type, pool, match)"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
         />
+        <label className="small muted" style={{ display: "flex", alignItems: "center", gap: 4 }}>
+          Rank by{" "}
+          <select
+            value={rankBy}
+            onChange={(e) => setRankBy(e.target.value as "elapsed" | "count")}
+          >
+            <option value="elapsed">Elapsed time</option>
+            <option value="count">Usage count</option>
+          </select>
+        </label>
         <span className="muted small">
           showing {visible.length} of {filtered.length}
         </span>
@@ -558,20 +620,28 @@ function TopConsumedObjectsTable({ rows }: { rows: ConsumedObjectRow[] }): JSX.E
             <th>Pool</th>
             <th>Object</th>
             <th>Type</th>
+            <th>Match</th>
             <th className="num">Usage count</th>
-            <th style={{ width: "30%" }}>Relative</th>
+            <th className="num">Elapsed</th>
+            <th style={{ width: "20%" }}>Relative</th>
           </tr>
         </thead>
         <tbody>
           {visible.map((r, idx) => {
-            const pct = (r.usage_count / maxUsage) * 100;
+            const value = rankBy === "elapsed" ? r.elapsed_time_ms ?? 0 : r.usage_count;
+            const pct = (value / maxValue) * 100;
+            const dim = r.match_kind && r.match_kind !== "qualified" ? 0.7 : 1;
             return (
-              <tr key={`${r.pool}.${r.object_name}.${idx}`}>
+              <tr key={`${r.pool}.${r.object_name}.${idx}`} style={{ opacity: dim }}>
                 <td className="num">{idx + 1}</td>
                 <td className="small">{r.pool}</td>
                 <td><code>{r.object_name}</code></td>
                 <td className="small muted">{r.object_type}</td>
+                <td className="small">
+                  <MatchKindBadge kind={r.match_kind} />
+                </td>
                 <td className="num">{r.usage_count.toLocaleString()}</td>
+                <td className="num small">{fmtElapsed(r.elapsed_time_ms ?? 0)}</td>
                 <td>
                   <div
                     aria-hidden="true"
@@ -594,7 +664,88 @@ function TopConsumedObjectsTable({ rows }: { rows: ConsumedObjectRow[] }): JSX.E
           <button onClick={() => setLimit(limit + 10)}>Show more</button>
         </div>
       )}
+      {captureStats.length > 0 && (
+        <CaptureStatsFootnote stats={captureStats} />
+      )}
     </>
+  );
+}
+
+function MatchKindBadge({
+  kind,
+}: {
+  kind?: "qualified" | "unqualified-resolved" | "ambiguous";
+}): JSX.Element {
+  if (!kind || kind === "qualified") {
+    return <span className="small muted" title="2-part schema.name resolved cleanly">qualified</span>;
+  }
+  if (kind === "unqualified-resolved") {
+    return (
+      <span
+        className="small"
+        style={{ color: "#b58900" }}
+        title="1-part name, exactly one schema owns it — attributed heuristically"
+      >
+        unqualified
+      </span>
+    );
+  }
+  return (
+    <span
+      className="small"
+      style={{ color: "#d2691e" }}
+      title="1-part name found in multiple schemas — treat counts as a suspect cluster"
+    >
+      ambiguous
+    </span>
+  );
+}
+
+function CaptureStatsFootnote({
+  stats,
+}: {
+  stats: Array<{ pool: string; stats: WorkloadCaptureStats }>;
+}): JSX.Element {
+  // Aggregate across pools for the headline, but keep per-pool details
+  // in a tooltip so the reader can drill in.
+  const total = stats.reduce(
+    (acc, { stats: s }) => ({
+      dmv_rows: acc.dmv_rows + s.dmv_rows,
+      parsed_ok: acc.parsed_ok + s.parsed_ok,
+      parsed_failed: acc.parsed_failed + s.parsed_failed,
+      parsed_empty: acc.parsed_empty + s.parsed_empty,
+      cache_requests_total: acc.cache_requests_total + s.cache_requests_total,
+    }),
+    { dmv_rows: 0, parsed_ok: 0, parsed_failed: 0, parsed_empty: 0, cache_requests_total: 0 },
+  );
+  const window = stats[0]?.stats.cache_window_days ?? 30;
+  const oldest = stats
+    .map((s) => s.stats.oldest_cache_entry)
+    .filter(Boolean)
+    .sort()[0];
+  const newest = stats
+    .map((s) => s.stats.newest_cache_entry)
+    .filter(Boolean)
+    .sort()
+    .slice(-1)[0];
+  const tooltip = stats
+    .map(
+      ({ pool, stats: s }) =>
+        `${pool}: ${s.cache_requests_total} cached / ${s.dmv_rows} dmv / ` +
+        `${s.parsed_ok} ok / ${s.parsed_failed} parse-fail`,
+    )
+    .join("\n");
+  return (
+    <div className="muted small" style={{ marginTop: 8 }} title={tooltip}>
+      <strong>Capture:</strong> {total.cache_requests_total.toLocaleString()} request(s)
+      in the {window}-day cache · this run: {total.dmv_rows.toLocaleString()} DMV row(s),{" "}
+      {total.parsed_ok} parsed, {total.parsed_failed} failed, {total.parsed_empty} empty
+      {oldest && newest && (
+        <>
+          {" "}· window {fmtDateTime(oldest)} → {fmtDateTime(newest)}
+        </>
+      )}
+    </div>
   );
 }
 

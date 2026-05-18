@@ -38,7 +38,7 @@ MANIFEST: tuple[ModuleAccess, ...] = (
             "T-SQL: sys.objects, sys.sql_modules, sys.parameters, sys.tables, "
             "sys.indexes, sys.dm_pdw_nodes_db_partition_stats, "
             "sys.dm_pdw_exec_requests, sys.dm_pdw_exec_sessions, "
-            "sys.dm_pdw_sql_requests (read-only DMV scans)",
+            "INFORMATION_SCHEMA.TABLES (read-only DMV / catalog scans)",
         ),
         azure_rbac=("Reader (workspace or RG)",),
         synapse_rbac=(),
@@ -49,7 +49,10 @@ MANIFEST: tuple[ModuleAccess, ...] = (
             "VIEW DEFINITION (so sys.objects exposes procedures and UDFs)",
         ),
         notes="DMV scans are tagged with OPTION (LABEL = 'sma:<module>') so the "
-              "analyzer's own activity is auditable in dm_pdw_exec_requests.",
+              "analyzer's own activity is auditable in dm_pdw_exec_requests. "
+              "The top-consumed-tables collector also writes a per-pool "
+              "on-disk cache under output/.cache/dedicated_pools_workload/ "
+              "so DMV roll-off does not gut the ranking between runs.",
     ),
     ModuleAccess(
         module="serverless_pools",

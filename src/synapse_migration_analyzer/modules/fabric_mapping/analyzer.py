@@ -40,6 +40,7 @@ _INPUT_FILES: dict[str, str] = {
     "spark_pools": "spark_pools.json",
     "pipelines": "pipelines.json",
     "monitoring": "monitoring.json",
+    "storage": "storage.json",
 }
 
 _RULES: dict[str, Callable[[dict[str, Any]], list[Recommendation]]] = {
@@ -48,6 +49,7 @@ _RULES: dict[str, Callable[[dict[str, Any]], list[Recommendation]]] = {
     "spark_pools": rules.rules_for_spark,
     "pipelines": rules.rules_for_pipelines,
     "monitoring": rules.rules_for_monitoring,
+    "storage": rules.rules_for_storage,
 }
 
 
@@ -233,11 +235,22 @@ class FabricMappingAnalyzer:
                         step_count=p.step_count,
                         p50_days=days_from_hours(p.p50_hours),
                         p90_days=days_from_hours(p.p90_hours),
+                        parallel_p50_hours=p.parallel_p50_hours,
+                        parallel_p90_hours=p.parallel_p90_hours,
+                        parallel_p50_days=days_from_hours(p.parallel_p50_hours),
+                        parallel_p90_days=days_from_hours(p.parallel_p90_hours),
+                        max_step_p50_hours=p.max_step_p50_hours,
+                        max_step_p90_hours=p.max_step_p90_hours,
                     )
                     for p in rollup.per_phase
                 ],
                 card_source=rollup.card_source,
                 card_version=rollup.card_version,
+                parallel_p50_hours=rollup.parallel_p50_hours,
+                parallel_p90_hours=rollup.parallel_p90_hours,
+                parallel_p50_days=days_from_hours(rollup.parallel_p50_hours),
+                parallel_p90_days=days_from_hours(rollup.parallel_p90_hours),
+                parallel_workers=rollup.parallel_workers,
             )
         except Exception as exc:  # noqa: BLE001
             log.warning("effort estimation failed: %s", exc)

@@ -170,6 +170,12 @@ class PipelineRunHistory(BaseModel):
     # values are counts {succeeded, failed, other}. Empty when no runs
     # were fetched. Powers the daily success/failure stacked bar chart.
     daily_status: dict[str, dict[str, int]] = Field(default_factory=dict)
+    # Per-UTC-hour rollup covering the trailing 24 hours of the window
+    # (24 entries when populated). Keys are ISO hour strings
+    # (``YYYY-MM-DDTHH:00:00Z``) and values are counts
+    # {succeeded, failed, other}. Powers the 24h companion bar chart on
+    # the dashboard alongside ``daily_status``.
+    hourly_status: dict[str, dict[str, int]] = Field(default_factory=dict)
 
 
 class PipelinesAnalysis(BaseModel):

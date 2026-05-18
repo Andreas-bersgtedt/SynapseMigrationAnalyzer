@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "synapse-migration-analyzer"
-version = "3.4.0"
+version = "4.0.0"
 description = "Analyze Azure Synapse Analytics workspaces to assess Microsoft Fabric Warehouse migration readiness."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -27,6 +27,7 @@ dependencies = [
     "jinja2>=3.1",
     "python-dotenv>=1.0",
     "six>=1.16",            # transitive dep needed by azure-mgmt-synapse models
+    "sqlglot>=23.0",        # AST-based T-SQL parser for workload analysis
 ]
 
 [project.optional-dependencies]

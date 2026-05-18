@@ -50,6 +50,13 @@ const EFFORT_LABELS: Record<string, string> = {
   high: "High",
 };
 
+const IMPACT_LABELS: Record<string, string> = {
+  high: "High",
+  medium: "Medium",
+  low: "Low",
+  unknown: "Unknown",
+};
+
 const STATE_LABELS: Record<string, string> = {
   ok: "OK",
   failed: "Failed",
@@ -83,6 +90,11 @@ export function severityLabel(raw: string): string {
 
 export function effortLabel(raw: string): string {
   return EFFORT_LABELS[raw] ?? titleCase(raw);
+}
+
+export function impactLabel(raw: string | null | undefined): string {
+  if (!raw) return "Unknown";
+  return IMPACT_LABELS[raw] ?? titleCase(raw);
 }
 
 export function stateLabel(raw: string): string {

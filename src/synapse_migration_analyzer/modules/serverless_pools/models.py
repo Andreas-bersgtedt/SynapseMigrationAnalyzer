@@ -61,6 +61,20 @@ class ServerlessDailyUsage(BaseModel):
     mb_seconds: int = 0
 
 
+class ServerlessHourlyUsage(BaseModel):
+    """Per-UTC-hour usage rollup over the trailing 24h.
+
+    Mirrors :class:`ServerlessDailyUsage` at hourly granularity so the
+    dashboard can render a 24h companion chart alongside the 28-day view.
+    """
+
+    hour: str  # ISO UTC hour, e.g. ``2026-05-18T14:00:00Z``
+    request_count: int = 0
+    data_processed_mb: int = 0
+    duration_seconds: int = 0
+    mb_seconds: int = 0
+
+
 class ServerlessCostEstimate(BaseModel):
     """Rough cost estimate based on data processed and a per-TB list price.
 
@@ -109,6 +123,7 @@ class ServerlessAnalysis(BaseModel):
     usage: list[ServerlessUsageStat] = Field(default_factory=list)
     top_queries: list[ServerlessTopQuery] = Field(default_factory=list)
     daily_usage: list[ServerlessDailyUsage] = Field(default_factory=list)
+    hourly_usage: list[ServerlessHourlyUsage] = Field(default_factory=list)
     cost_estimate: ServerlessCostEstimate | None = None
     # v2
     external_table_columns: list[ExternalTableColumn] = Field(default_factory=list)

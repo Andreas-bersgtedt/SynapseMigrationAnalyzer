@@ -7,6 +7,11 @@ from pydantic import BaseModel, Field
 
 Severity = Literal["info", "warning", "blocker"]
 Effort = Literal["low", "medium", "high"]
+# v2.11 — business-impact axis. Independent of `severity` (technical risk) and
+# `effort` (cost to fix); answers "if I do nothing, how much does it hurt?".
+# Populated by rules when there is a signal (workload share, blast radius,
+# storage MB, …); stays "unknown" otherwise so older artefacts still load.
+Impact = Literal["high", "medium", "low", "unknown"]
 
 
 class Recommendation(BaseModel):
@@ -18,6 +23,9 @@ class Recommendation(BaseModel):
     target: str | None = None              # specific entity (table, pool, ...)
     detail: str
     fabric_action: str | None = None       # what the user should do in Fabric
+    # v2.11 — business-impact axis. Optional so existing artefacts deserialise.
+    impact: Impact = "unknown"
+    impact_detail: str | None = None       # one-sentence evidence ("78% of pool elapsed time")
 
 
 class ModuleSummary(BaseModel):
@@ -67,6 +75,15 @@ class PhaseEffortSummary(BaseModel):
     # 15 % spillage. Optional on older artefacts.
     p50_days: int | None = None
     p90_days: int | None = None
+    # v2.11 — critical-path / parallel projection. With N workers a phase
+    # finishes in max(longest_step, total_hours / N). Optional so older
+    # artefacts deserialise cleanly.
+    parallel_p50_hours: float | None = None
+    parallel_p90_hours: float | None = None
+    parallel_p50_days: int | None = None
+    parallel_p90_days: int | None = None
+    max_step_p50_hours: float | None = None
+    max_step_p90_hours: float | None = None
 
 
 class EffortSummary(BaseModel):
@@ -84,6 +101,13 @@ class EffortSummary(BaseModel):
     per_phase: list[PhaseEffortSummary] = Field(default_factory=list)
     card_source: str = "default"
     card_version: int = 1
+    # v2.11 — project-level critical-path projection. Phases stay sequential
+    # but steps inside each phase parallelise across ``parallel_workers``.
+    parallel_p50_hours: float | None = None
+    parallel_p90_hours: float | None = None
+    parallel_p50_days: int | None = None
+    parallel_p90_days: int | None = None
+    parallel_workers: int | None = None
 
 
 class CapacityProjection(BaseModel):

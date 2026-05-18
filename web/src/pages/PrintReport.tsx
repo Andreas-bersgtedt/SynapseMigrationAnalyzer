@@ -152,7 +152,7 @@ export default function PrintReport() {
         </div>
       </section>
 
-      <section className="report-section">
+      <section className="report-section landscape">
         <h2>Workspaces</h2>
         <table>
           <thead>

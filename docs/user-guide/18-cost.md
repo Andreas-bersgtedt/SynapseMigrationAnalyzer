@@ -66,7 +66,8 @@ ORDER BY total_ms DESC;
 ```
 
 Labels currently emitted: `sma:tables`, `sma:column_stats`,
-`sma:top_queries`, `sma:top_consumed_objects`, `sma:usage`.
+`sma:top_queries`, `sma:workload_commands`, `sma:workload_catalog`,
+`sma:usage`.
 
 ### Worked example: 5-pool workspace, weekly run
 

@@ -215,6 +215,7 @@ Do not expose the control plane on a shared host.
 | Database principals & role memberships | `sys.database_principals`, `sys.database_role_members` | `queries/security.sql` |
 | Workload groups & classifier counts | `sys.workload_management_*` | `queries/workload.sql` |
 | Code objects (procs / views / functions) with stable id | `sys.sql_modules` | `queries/code_objects.sql` |
+| Top consumed tables / views (sqlglot AST + 30-day workload cache) | `sys.dm_pdw_exec_requests` + `INFORMATION_SCHEMA.TABLES` | `queries/workload_commands.sql` + `workload_parser.py` |
 | **v2** Column collation audit (per-column vs DB default) | `sys.columns` + `sys.databases` | `queries/column_collation.sql` |
 | **v2** Materialized-view inventory | `sys.views` + `sys.indexes` | `queries/materialized_views.sql` |
 | **v2** Statistics freshness (last_updated, modification_counter) | `sys.stats` + `sys.dm_db_stats_properties` | `queries/statistics_freshness.sql` |

@@ -398,6 +398,51 @@ class PipelinesAnalyzer:
                 log.debug("daily-status backfill failed: %s", exc)
                 result.errors.append(format_error("daily_status_backfill", exc))
         history.daily_status = daily
+
+        # Per-UTC-hour rollup of the trailing 24 hours. Runs are fetched
+        # newest-first (RunStart DESC) so even when the global pull is
+        # truncated, the last 24h slice is always present in ``runs``
+        # and we can bucket directly without a backfill query.
+        end_utc = end.astimezone(timezone.utc)
+        # Anchor the 24-bucket window to the top of ``end``'s hour so the
+        # right-most bin always represents the most recent (possibly
+        # in-progress) hour.
+        last_hour = end_utc.replace(minute=0, second=0, microsecond=0)
+        first_hour = last_hour - timedelta(hours=23)
+        hourly: dict[str, dict[str, int]] = {}
+        # Pre-seed every hour so the chart always renders a continuous
+        # x-axis even when activity is sparse.
+        cur_hour = first_hour
+        while cur_hour <= last_hour:
+            hourly[cur_hour.isoformat().replace("+00:00", "Z")] = {
+                "succeeded": 0,
+                "failed": 0,
+                "other": 0,
+            }
+            cur_hour += timedelta(hours=1)
+        for run in runs:
+            ts = run.get("run_end") or run.get("run_start")
+            if ts is None:
+                continue
+            try:
+                ts_utc = ts.astimezone(timezone.utc)
+            except Exception:  # noqa: BLE001
+                continue
+            if ts_utc < first_hour or ts_utc > last_hour + timedelta(hours=1):
+                continue
+            bin_start = ts_utc.replace(minute=0, second=0, microsecond=0)
+            key = bin_start.isoformat().replace("+00:00", "Z")
+            bucket = hourly.get(key)
+            if bucket is None:
+                continue
+            status = (run.get("status") or "").lower()
+            if status == "succeeded":
+                bucket["succeeded"] += 1
+            elif status == "failed":
+                bucket["failed"] += 1
+            else:
+                bucket["other"] += 1
+        history.hourly_status = hourly
         return history
 
     def _backfill_daily_status(

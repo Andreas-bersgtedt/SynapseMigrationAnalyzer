@@ -102,6 +102,13 @@ class ServerlessPoolsAnalyzer:
                 result.errors.append(f"daily_usage: {exc}")
             self._progress.step(label="daily_usage")
 
+            try:
+                result.hourly_usage = col.collect_hourly_usage(sql)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("hourly_usage failed: %s", exc)
+                result.errors.append(f"hourly_usage: {exc}")
+            self._progress.step(label="hourly_usage")
+
         # v2 — per-storage-account attribution. Pure-python over what we already collected.
         try:
             price = float(os.getenv("SMA_SERVERLESS_PRICE_PER_TB", str(col.DEFAULT_PRICE_PER_TB_USD)))

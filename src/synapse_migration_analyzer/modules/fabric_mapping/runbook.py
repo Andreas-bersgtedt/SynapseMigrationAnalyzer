@@ -73,6 +73,11 @@ _AREA_TO_PHASE: dict[str, Phase] = {
     "pipelines.linked_services": "orchestration_migration",
     "pipelines.triggers": "orchestration_migration",
     "pipelines.expressions": "orchestration_migration",
+    # v2.11 — storage module recommendations land in Foundation (capacity
+    # planning) for sizing-related items and in ingest_shortcuts for OneLake
+    # shortcut work.
+    "storage.dedicated_pool": "foundation",
+    "storage.accounts": "ingest_shortcuts",
 }
 
 _PHASE_ORDER: tuple[Phase, ...] = (
@@ -136,6 +141,8 @@ def _rollback_hint_for(rec: Recommendation) -> str | None:
         return "Maintain a Synapse Spark pool fallback for 1 sprint after the Fabric notebook cuts over."
     if rec.area.startswith("serverless_pools"):
         return "OneLake shortcuts are read-only — rollback is just deleting the shortcut."
+    if rec.area.startswith("storage"):
+        return "Keep the source storage account online and read-only until OneLake shortcuts are verified."
     if rec.area.startswith("monitoring"):
         return None
     return None

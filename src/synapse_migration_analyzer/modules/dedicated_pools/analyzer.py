@@ -149,7 +149,6 @@ class DedicatedPoolsAnalyzer:
                 ("statistics", collect_statistics, "statistics"),
                 ("column_stats", collect_column_stats, "column_stats"),
                 ("top_queries", collect_top_queries, "top_queries"),
-                ("top_consumed_objects", collect_top_consumed_objects, "top_consumed_objects"),
             ):
                 try:
                     setattr(analysis, target, fn(sql))
@@ -158,6 +157,27 @@ class DedicatedPoolsAnalyzer:
                     analysis.errors.append(f"{label}: {exc}")
                 finally:
                     self._progress.step(label=f"{pool_name}/{label}")
+
+            # Top-consumed objects has a wider signature (needs cache
+            # location + identity) and returns a tuple. Run it after
+            # the standard loop so its progress slot stays aligned.
+            try:
+                top_objs, capture_stats = collect_top_consumed_objects(
+                    sql,
+                    output_dir=self._cfg.output_dir,
+                    workspace_name=self._cfg.azure.workspace_name,
+                    pool_name=inventory.name,
+                )
+                analysis.top_consumed_objects = top_objs
+                analysis.workload_capture_stats = capture_stats
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "Collector 'top_consumed_objects' failed for pool %s: %s",
+                    inventory.name, exc,
+                )
+                analysis.errors.append(f"top_consumed_objects: {exc}")
+            finally:
+                self._progress.step(label=f"{pool_name}/top_consumed_objects")
         finally:
             try:
                 session_cm.__exit__(None, None, None)

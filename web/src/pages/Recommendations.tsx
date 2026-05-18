@@ -1,27 +1,68 @@
 import { useMemo, useState } from "react";
 import { loadFabricMapping } from "../api/loader";
 import { useAsync } from "../hooks/useAsync";
-import { Empty, SeverityPill } from "../components/Atoms";
+import { Empty, SeverityPill, StatCard } from "../components/Atoms";
 import HelpLink from "../components/HelpLink";
-import { areaLabel, effortLabel } from "../lib/labels";
+import { areaLabel, effortLabel, impactLabel } from "../lib/labels";
+import type { Recommendation } from "../types";
 
 const SEV_ORDER = { blocker: 0, warning: 1, info: 2 } as Record<string, number>;
+const IMPACT_ORDER = { high: 0, medium: 1, low: 2, unknown: 3 } as Record<string, number>;
+
+type GroupMode = "none" | "area" | "target";
+
+function ImpactPill({ impact }: { impact?: string | null }) {
+  const value = impact ?? "unknown";
+  const cls =
+    value === "high" ? "err"
+    : value === "medium" ? "warn"
+    : value === "low" ? "ok"
+    : "muted";
+  return <span className={`pill ${cls}`} title={`Business impact: ${impactLabel(value)}`}>{impactLabel(value)}</span>;
+}
+
+function RecRow({ r }: { r: Recommendation }) {
+  return (
+    <tr>
+      <td><SeverityPill severity={r.severity} /></td>
+      <td><ImpactPill impact={r.impact} /></td>
+      <td title={r.effort}>{effortLabel(r.effort)}</td>
+      <td className="small" title={r.area}>{areaLabel(r.area)}</td>
+      <td className="small muted">{r.target}</td>
+      <td>
+        <details>
+          <summary>{r.title}</summary>
+          <div className="small" style={{ marginTop: 6 }}>{r.detail}</div>
+          {r.impact_detail ? (
+            <div className="small muted" style={{ marginTop: 4 }}>
+              <strong>Impact:</strong> {r.impact_detail}
+            </div>
+          ) : null}
+        </details>
+      </td>
+      <td className="small muted">{r.fabric_action}</td>
+    </tr>
+  );
+}
 
 export default function Recommendations() {
   const { data, loading } = useAsync(loadFabricMapping);
   const [filter, setFilter] = useState("");
   const [sev, setSev] = useState("");
   const [area, setArea] = useState("");
+  const [impact, setImpact] = useState("");
+  const [groupBy, setGroupBy] = useState<GroupMode>("none");
 
-  const filtered = useMemo(() => {
+  const filtered = useMemo<Recommendation[]>(() => {
     if (!data) return [];
     const q = filter.trim().toLowerCase();
     return data.recommendations
       .filter((r) => {
         if (sev && r.severity !== sev) return false;
         if (area && r.area !== area) return false;
+        if (impact && (r.impact ?? "unknown") !== impact) return false;
         if (!q) return true;
-        return [r.id, r.title, r.detail, r.area, r.target ?? "", r.fabric_action ?? ""]
+        return [r.id, r.title, r.detail, r.area, r.target ?? "", r.fabric_action ?? "", r.impact_detail ?? ""]
           .join(" ")
           .toLowerCase()
           .includes(q);
@@ -29,9 +70,32 @@ export default function Recommendations() {
       .sort(
         (a, b) =>
           (SEV_ORDER[a.severity] ?? 9) - (SEV_ORDER[b.severity] ?? 9) ||
+          (IMPACT_ORDER[a.impact ?? "unknown"] ?? 9) - (IMPACT_ORDER[b.impact ?? "unknown"] ?? 9) ||
           a.area.localeCompare(b.area),
       );
-  }, [data, filter, sev, area]);
+  }, [data, filter, sev, area, impact]);
+
+  const counts = useMemo(() => {
+    const out = { blocker: 0, warning: 0, info: 0, high: 0, medium: 0, low: 0, unknown: 0 };
+    for (const r of filtered) {
+      out[r.severity as "blocker" | "warning" | "info"] += 1;
+      const imp = (r.impact ?? "unknown") as keyof typeof out;
+      out[imp] += 1;
+    }
+    return out;
+  }, [filtered]);
+
+  const grouped = useMemo(() => {
+    if (groupBy === "none") return null;
+    const map = new Map<string, Recommendation[]>();
+    for (const r of filtered) {
+      const key = groupBy === "area" ? areaLabel(r.area) : (r.target?.trim() || "(no target)");
+      const list = map.get(key) ?? [];
+      list.push(r);
+      map.set(key, list);
+    }
+    return Array.from(map.entries()).sort((a, b) => b[1].length - a[1].length);
+  }, [filtered, groupBy]);
 
   if (loading) return <div className="empty">Loading…</div>;
   if (!data || data.recommendations.length === 0)
@@ -42,6 +106,18 @@ export default function Recommendations() {
   return (
     <>
       <h1>Recommendations <HelpLink slug="06-recommendations" /></h1>
+
+      {/* v2.11 — severity + impact rollup tiles, computed against the
+          current filter so the numbers reflect what the user is looking at. */}
+      <div className="grid" style={{ marginBottom: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", gap: 8 }}>
+        <StatCard label="Blockers" value={counts.blocker} />
+        <StatCard label="Warnings" value={counts.warning} />
+        <StatCard label="Info" value={counts.info} />
+        <StatCard label="High impact" value={counts.high} />
+        <StatCard label="Medium" value={counts.medium} />
+        <StatCard label="Low / unknown" value={counts.low + counts.unknown} />
+      </div>
+
       <div className="toolbar">
         <input
           placeholder="Filter (id, title, detail, target)"
@@ -54,40 +130,63 @@ export default function Recommendations() {
           <option value="warning">Warning</option>
           <option value="info">Info</option>
         </select>
+        <select value={impact} onChange={(e) => setImpact(e.target.value)}>
+          <option value="">All impact</option>
+          <option value="high">High impact</option>
+          <option value="medium">Medium impact</option>
+          <option value="low">Low impact</option>
+          <option value="unknown">Unknown impact</option>
+        </select>
         <select value={area} onChange={(e) => setArea(e.target.value)}>
           <option value="">All areas</option>
           {areas.map((a) => <option key={a} value={a}>{areaLabel(a)}</option>)}
+        </select>
+        <select value={groupBy} onChange={(e) => setGroupBy(e.target.value as GroupMode)}>
+          <option value="none">No grouping</option>
+          <option value="area">Group by area</option>
+          <option value="target">Group by target</option>
         </select>
         <span className="muted small">
           {filtered.length} / {data.recommendations.length}
         </span>
       </div>
 
-      <table>
-        <thead>
-          <tr>
-            <th>Severity</th><th>Effort</th><th>Area</th><th>Target</th>
-            <th>Title</th><th>Fabric action</th>
-          </tr>
-        </thead>
-        <tbody>
-          {filtered.map((r) => (
-            <tr key={r.id}>
-              <td><SeverityPill severity={r.severity} /></td>
-              <td title={r.effort}>{effortLabel(r.effort)}</td>
-              <td className="small" title={r.area}>{areaLabel(r.area)}</td>
-              <td className="small muted">{r.target}</td>
-              <td>
-                <details>
-                  <summary>{r.title}</summary>
-                  <div className="small" style={{ marginTop: 6 }}>{r.detail}</div>
-                </details>
-              </td>
-              <td className="small muted">{r.fabric_action}</td>
+      {grouped ? (
+        grouped.map(([key, items]) => (
+          <details key={key} open style={{ marginBottom: 12 }}>
+            <summary>
+              <strong>{key}</strong>{" "}
+              <span className="muted small">
+                — {items.length} item{items.length === 1 ? "" : "s"}
+              </span>
+            </summary>
+            <table>
+              <thead>
+                <tr>
+                  <th>Severity</th><th>Impact</th><th>Effort</th><th>Area</th><th>Target</th>
+                  <th>Title</th><th>Fabric action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((r) => <RecRow key={r.id} r={r} />)}
+              </tbody>
+            </table>
+          </details>
+        ))
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th>Severity</th><th>Impact</th><th>Effort</th><th>Area</th><th>Target</th>
+              <th>Title</th><th>Fabric action</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {filtered.map((r) => <RecRow key={r.id} r={r} />)}
+          </tbody>
+        </table>
+      )}
     </>
   );
 }
+

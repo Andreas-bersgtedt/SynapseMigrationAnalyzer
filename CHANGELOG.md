@@ -6,6 +6,124 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.0] - 2026-05-18
+
+### Added
+- **Business-impact axis on every recommendation.** `Recommendation`
+  now carries `impact` (`high` / `medium` / `low` / `unknown`) and an
+  optional `impact_detail` string. Severity says *what kind of
+  problem*, impact says *how much it matters for the workload*. The
+  Recommendations page renders an Impact pill (red / amber / green /
+  muted), an Impact filter dropdown, six rollup tiles
+  (blockers / warnings / info / high / medium / low+unknown) that
+  recompute against the active filter, and a *Group by* selector
+  (None / Area / Target) that collapses rows under headers.
+- **Workload-aware rule severities.** When `top_consumed_objects` is
+  available, the dedicated-pool rules build a workload share lookup
+  keyed by both qualified `schema.name` and bare object name. Heap
+  size, stale statistics, MERGE / per-rule T-SQL findings, and
+  distribution-advisor candidates now flex severity (and impact)
+  based on whether the object is a hot driver of CPU elapsed-ms or
+  is cold and safe to defer. `_tsql_recommendations` additionally
+  emits per-object hot recs (`dp.tsql.<rule_id>.<pool>.hot.<cid>`)
+  so a Workload Group rule warning on a 12 %-elapsed table is
+  surfaced as a blocker without changing the aggregate roll-up.
+- **Storage rules module.** New `rules_for_storage` flags
+  dedicated-pool storage at ≥ 95 % used (blocker), ≥ 80 % used
+  (warning), default-workspace storage account, and large
+  workspace-attached accounts. Wired into `analyzer.py` via
+  `storage.json`, with phase mapping
+  (`storage.dedicated_pool → foundation`,
+  `storage.accounts → ingest_shortcuts`) and a rollback hint
+  ("keep source storage online read-only until OneLake shortcuts
+  verified").
+- **Heuristic refinements.** Replicated-table candidate now triggers
+  on `rows > 50M OR data_space_mb > 2048` (not rows alone). Stats
+  rule detects high-churn (`modification_counter / row_count > 0.10`)
+  in addition to age > 14 d. DWU monitoring gains a *bursty* tier
+  (`p95 > 85 ∧ avg < 40` → autoscale hint). Pipeline run-history
+  split into `idle_30d`, `idle_7d`, `chronic_failure` (sr < 0.50),
+  and `low_success` (0.50 ≤ sr < 0.95) — each with its own severity
+  and impact.
+- **Critical-path / parallel effort projection.** `EffortRollup`
+  gains `parallel_p50_hours` / `parallel_p90_hours` (and per-phase
+  `max_step_*`). With N workers the phase finishes in
+  `max(longest_step, phase_total / N)`; phases stay sequential
+  between each other. The Runbook page renders the parallel hours
+  alongside the sequential hours, including calendar-days converted
+  with the same `ceil((h / 8) × 1.15)` formula.
+- **Runbook step state.** Each step gets a Status dropdown
+  (Not started / In progress / Done / Skipped). Skipping requires a
+  free-text reason — captured inline and persisted in
+  `localStorage` keyed on `source_recommendation_id` (or
+  `phase + order` as fallback). Phase headers show live
+  `X/Y done · Z skipped · est. P50 h remaining`. Done rows dim;
+  skipped rows strike through.
+- **Copy as Markdown.** New buttons on the Runbook page emit a
+  GitHub-flavoured Markdown table — *Copy phase as Markdown*
+  per-phase, *Copy whole runbook as Markdown* at the top. Skip
+  reasons travel with the export so reviewers see why steps were
+  dropped.
+- **Docs alignment.** `docs/user-guide/06-recommendations.md` and
+  `07-runbook.md` rewritten to reflect the impact axis, the
+  six-phase model
+  (foundation / data_plane_prep / ingest_shortcuts / compute_migration /
+  orchestration_migration / verification), the new storage and
+  pipelines.runs.* areas, step-state semantics, copy-as-markdown,
+  and the critical-path projection.
+
+### Added (previous Unreleased entries)
+- **Top consumed tables / views rewritten end-to-end with sqlglot +
+  workload cache.** The "hit and miss" behaviour of the old SQL-side
+  LIKE join is gone, replaced with a parser-driven pipeline:
+  - New `workload_commands.sql` pulls submitted commands from
+    `sys.dm_pdw_exec_requests` (the user-statement DMV) instead of the
+    distributed step-text DMV.
+  - New `workload_parser.py` walks the sqlglot AST and resolves each
+    `Table` node against the pool's `INFORMATION_SCHEMA` catalog,
+    tagging it `qualified`, `unqualified-resolved` or `ambiguous`.
+    CTE names, temp tables and references outside the catalog are
+    dropped automatically.
+  - New `workload_cache.py` persists parsed requests under
+    `output/.cache/dedicated_pools_workload/<workspace>__<pool>.json`
+    with a 30-day TTL, so the DMV's rolling-buffer roll-off stops
+    gutting the ranking between runs.
+  - `TopConsumedObject` gains `elapsed_time_ms` and `match_kind` and
+    `PoolAnalysis` carries a new `WorkloadCaptureStats` health signal
+    (DMV row count, parse success/fail, cache window, oldest/newest).
+  - SQL Surface page adds a **Rank by** toggle (Elapsed time *(default)*
+    / Usage count), an Elapsed column, a match-kind badge that dims
+    heuristic rows, and a muted capture-stats footnote so readers can
+    judge how trustworthy the ranking is.
+  - Adds `sqlglot>=23.0` to the runtime dependencies.
+- **Dashboard 28-day / 24-hour split charts for every time-series
+  workload.** The DWU utilization, Pipeline activity, Spark pools and
+  Serverless SQL sections each now render the existing 28-day chart on
+  the left and a new 24-hour companion chart on the right, so today's
+  activity is visible at a glance without losing the trending view.
+  - Pipelines: new `hourly_status` field on `PipelineRunHistory`
+    (ISO-hour-keyed succeeded/failed/other counts), populated by the
+    pipelines analyzer from the same in-memory run list as
+    `daily_status` &mdash; no extra Azure calls required.
+  - Spark: new `SparkHourlyBars` component bins per-pool vCore-hours
+    into 24 hourly slots anchored to the top of the current local hour.
+  - Serverless SQL: new `data_processed_hourly.sql` query bucketing
+    `sys.dm_exec_requests_history` per UTC hour over the trailing 24h,
+    new `ServerlessHourlyUsage` model + `hourly_usage` field on
+    `ServerlessAnalysis`, surfaced as a clustered queries/MB bar chart
+    matching the 28-day view. Daily chart now shows up to 28 days
+    (was 7).
+  - Older runs without hourly data render an empty-state hint inviting
+    a Re-analyze.
+- **Per-section Re-analyze buttons on the dashboard (control plane).**
+  The DWU, Pipelines, Spark and Serverless section headers each now
+  expose a Re-analyze button that triggers a targeted analyzer run for
+  just that workload module (plus `fabric_mapping` so the top-line
+  readiness/cost stays fresh) using the section's current window
+  length. Progress streams via SSE; the page auto-reloads onto the new
+  run when done. Other modules carry forward from the prior run so
+  partial re-runs are safe.
+
 ## [3.4.0] - 2026-05-17
 
 ### Added

@@ -3,6 +3,7 @@ import { useAsync } from "../hooks/useAsync";
 import { Empty, PctPill, ScorePill, SeverityPill, StatCard } from "../components/Atoms";
 import HelpLink from "../components/HelpLink";
 import { ProvenanceBadge, useCurrentRunMeta } from "../components/Provenance";
+import ReanalyzeButton from "../components/ReanalyzeButton";
 import { areaLabel, effortLabel, moduleLabel } from "../lib/labels";
 import type { Recommendation, Severity, ModuleSummary } from "../types";
 
@@ -424,6 +425,7 @@ function DwuUtilizationSection({
       <h2>
         DWU utilization
         <ProvenanceBadge meta={runMeta ?? null} module="monitoring" />
+        <ReanalyzeButton modules={["monitoring"]} days={windowDays} title="Re-run the monitoring analyzer for this workspace" />
       </h2>
       <div className="small muted" style={{ marginBottom: 8 }}>
         Azure Monitor <code>DWUUsedPercent</code> over the last {windowDays} day
@@ -454,7 +456,21 @@ function DwuUtilizationSection({
         />
       </div>
 
-      <DwuLineChart pools={pools} pctByPool={pctByPool} windowDays={windowDays} />
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          gap: 16,
+          marginTop: 12,
+        }}
+      >
+        <div style={{ flex: "1 1 360px", minWidth: 0 }}>
+          <DwuLineChart pools={pools} pctByPool={pctByPool} windowDays={windowDays} mode="window" />
+        </div>
+        <div style={{ flex: "1 1 360px", minWidth: 0 }}>
+          <DwuLineChart pools={pools} pctByPool={pctByPool} windowDays={windowDays} mode="24h" />
+        </div>
+      </div>
 
       {stats.length > 0 && (
         <table style={{ marginTop: 12 }}>
@@ -498,22 +514,41 @@ function DwuLineChart({
   pools,
   pctByPool,
   windowDays,
+  mode = "window",
 }: {
   pools: string[];
   pctByPool: Map<string, Array<[string, number | null]>>;
   windowDays: number;
+  mode?: "window" | "24h";
 }) {
+  // In 24h mode, restrict the series to the trailing 24 hours so the
+  // chart shows fine-grained detail next to the longer window view.
+  const cutoffMs = mode === "24h" ? Date.now() - 24 * 60 * 60 * 1000 : -Infinity;
+
   // Collect every (t, v) across all pools to find the global x-range.
   const allTimes: number[] = [];
   for (const pool of pools) {
     for (const [t] of pctByPool.get(pool) ?? []) {
       const ms = Date.parse(t);
-      if (Number.isFinite(ms)) allTimes.push(ms);
+      if (Number.isFinite(ms) && ms >= cutoffMs) allTimes.push(ms);
     }
   }
-  if (allTimes.length === 0) return null;
-  const tMin = Math.min(...allTimes);
-  const tMax = Math.max(...allTimes);
+  if (allTimes.length === 0) {
+    return (
+      <div style={{ marginTop: 12 }}>
+        <div className="small muted" style={{ marginBottom: 4 }}>
+          {mode === "24h"
+            ? "DWU % over the last 24 hours"
+            : "DWU % over time per pool (100 % = DWU limit)"}
+        </div>
+        <div className="empty small muted" style={{ padding: 12 }}>
+          No samples in this window.
+        </div>
+      </div>
+    );
+  }
+  const tMin = mode === "24h" ? Math.max(Math.min(...allTimes), cutoffMs) : Math.min(...allTimes);
+  const tMax = mode === "24h" ? Date.now() : Math.max(...allTimes);
   const tSpan = Math.max(1, tMax - tMin);
 
   // Y axis: clamp to >= 100 so the reference line is always visible, and
@@ -521,7 +556,9 @@ function DwuLineChart({
   const observedMax = (() => {
     let m = 0;
     for (const pool of pools) {
-      for (const [, v] of pctByPool.get(pool) ?? []) {
+      for (const [t, v] of pctByPool.get(pool) ?? []) {
+        const ms = Date.parse(t);
+        if (!Number.isFinite(ms) || ms < cutoffMs) continue;
         if (v != null && Number.isFinite(v) && v > m) m = v;
       }
     }
@@ -554,15 +591,19 @@ function DwuLineChart({
   const yTicks: number[] = [0, 25, 50, 75, 100];
   if (yMax > 100) yTicks.push(yMax);
 
-  // X labels — show ~6 evenly spaced day boundaries within the window.
-  const labelCount = Math.min(6, Math.max(2, windowDays));
+  // X labels — show ~6 evenly spaced ticks. Format as HH:mm in 24h mode,
+  // M/D in window mode.
+  const labelCount = mode === "24h" ? 5 : Math.min(6, Math.max(2, windowDays));
   const xLabels: Array<{ x: number; label: string }> = [];
   for (let i = 0; i < labelCount; i++) {
     const ms = tMin + ((tMax - tMin) * i) / (labelCount - 1);
     const d = new Date(ms);
     xLabels.push({
       x: xOf(ms),
-      label: `${d.getUTCMonth() + 1}/${d.getUTCDate()}`,
+      label:
+        mode === "24h"
+          ? `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`
+          : `${d.getUTCMonth() + 1}/${d.getUTCDate()}`,
     });
   }
 
@@ -572,14 +613,21 @@ function DwuLineChart({
   return (
     <div style={{ marginTop: 12 }}>
       <div className="small muted" style={{ marginBottom: 4 }}>
-        DWU % over time per pool (100 % = DWU limit)
+        {mode === "24h"
+          ? "DWU % over the last 24 hours (100 % = DWU limit)"
+          : `DWU % over the last ${windowDays} day${windowDays === 1 ? "" : "s"} per pool (100 % = DWU limit)`}
       </div>
       <div style={{ overflowX: "auto" }}>
         <svg
-          width={width}
-          height={height}
+          viewBox={`0 0 ${width} ${height}`}
+          width="100%"
+          style={{ maxWidth: width, display: "block" }}
           role="img"
-          aria-label="Line chart of DWU utilization percent per pool over time"
+          aria-label={
+            mode === "24h"
+              ? "Line chart of DWU utilization percent per pool over the last 24 hours"
+              : "Line chart of DWU utilization percent per pool over time"
+          }
         >
           {/* Y grid + tick labels */}
           {yTicks.map((t, i) => {
@@ -626,7 +674,7 @@ function DwuLineChart({
             let inSeg = false;
             for (const [t, v] of pts) {
               const ms = Date.parse(t);
-              if (!Number.isFinite(ms) || v == null || !Number.isFinite(v)) {
+              if (!Number.isFinite(ms) || ms < cutoffMs || v == null || !Number.isFinite(v)) {
                 inSeg = false;
                 continue;
               }
@@ -650,6 +698,50 @@ function DwuLineChart({
               </path>
             );
           })}
+
+          {/* Average reference line in 24h mode — mean across every
+           * non-null sample of every visible pool. */}
+          {mode === "24h" && (() => {
+            let sum = 0;
+            let n = 0;
+            for (const pool of pools) {
+              for (const [t, v] of pctByPool.get(pool) ?? []) {
+                const ms = Date.parse(t);
+                if (!Number.isFinite(ms) || ms < cutoffMs) continue;
+                if (v == null || !Number.isFinite(v)) continue;
+                sum += v;
+                n += 1;
+              }
+            }
+            if (n === 0) return null;
+            const avg = sum / n;
+            const y = yOf(avg);
+            return (
+              <g>
+                <line
+                  x1={padX}
+                  x2={width - padX}
+                  y1={y}
+                  y2={y}
+                  stroke="var(--accent)"
+                  strokeDasharray="5,4"
+                  strokeWidth={1.5}
+                  opacity={0.85}
+                >
+                  <title>{`Average DWU: ${avg.toFixed(1)}%`}</title>
+                </line>
+                <text
+                  x={width - padX - 4}
+                  y={y - 4}
+                  textAnchor="end"
+                  fontSize={10}
+                  fill="var(--accent)"
+                >
+                  avg {avg.toFixed(1)}%
+                </text>
+              </g>
+            );
+          })()}
         </svg>
       </div>
       {pools.length > 1 && (
@@ -803,7 +895,7 @@ function PipelinesSection({ pipelines, runMeta }: { pipelines: import("../types"
 
   return (
     <section className="section">
-      <h2>Pipeline activity (last {window} days)<ProvenanceBadge meta={runMeta ?? null} module="pipelines" /></h2>
+      <h2>Pipeline activity (last {window} days)<ProvenanceBadge meta={runMeta ?? null} module="pipelines" /><ReanalyzeButton modules={["pipelines"]} days={window} title="Re-run the pipelines analyzer for this workspace" /></h2>
       <div className="grid cols-5">
         <StatCard
           label="Daily pipeline runs"
@@ -836,7 +928,21 @@ function PipelinesSection({ pipelines, runMeta }: { pipelines: import("../types"
         />
       </div>
 
-      <DailyRunsChart history={history} />
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          gap: 16,
+          marginTop: 12,
+        }}
+      >
+        <div style={{ flex: "1 1 360px", minWidth: 0 }}>
+          <DailyRunsChart history={history} />
+        </div>
+        <div style={{ flex: "1 1 360px", minWidth: 0 }}>
+          <HourlyRunsChart history={history} />
+        </div>
+      </div>
 
       <table style={{ marginTop: 12 }}>
         <thead>
@@ -957,8 +1063,9 @@ function DailyRunsChart({ history }: { history: import("../types").PipelineRunHi
       </div>
       <div style={{ overflowX: "auto" }}>
         <svg
-          width={width}
-          height={height}
+          viewBox={`0 0 ${width} ${height}`}
+          width="100%"
+          style={{ maxWidth: width, display: "block" }}
           role="img"
           aria-label="Stacked bar chart of daily pipeline run outcomes"
         >
@@ -1042,6 +1149,194 @@ function niceCeil(n: number): number {
   else if (r <= 5) nice = 5;
   else nice = 10;
   return nice * base;
+}
+
+/**
+ * 24h companion to ``DailyRunsChart``. Same stacked-bar conventions but
+ * x-axis is per-UTC-hour over the trailing 24 hours, sourced from the
+ * backend-precomputed ``hourly_status`` map (pre-seeded with empty bins
+ * so the axis is always continuous). Renders an empty-state when older
+ * runs are loaded that predate the field.
+ */
+function HourlyRunsChart({ history }: { history: import("../types").PipelineRunHistory }) {
+  const hourly = history.hourly_status;
+  if (!hourly) {
+    return (
+      <div style={{ marginTop: 12 }}>
+        <div className="small muted" style={{ marginBottom: 4 }}>
+          Hourly pipeline run outcomes (last 24h)
+        </div>
+        <div className="empty small muted" style={{ padding: 12 }}>
+          Hourly buckets not present on this run — re-analyze pipelines to populate.
+        </div>
+      </div>
+    );
+  }
+
+  // Sort keys chronologically (ISO-8601 hour strings sort lexically).
+  const keys = Object.keys(hourly).sort();
+  if (keys.length === 0) return null;
+
+  const hours: Array<{ key: string; label: string; succeeded: number; failed: number; other: number; total: number }> = keys.map((k) => {
+    const v = hourly[k] ?? { succeeded: 0, failed: 0, other: 0 };
+    const d = new Date(k);
+    const label = Number.isNaN(d.getTime())
+      ? k.slice(11, 13)
+      : `${String(d.getHours()).padStart(2, "0")}:00`;
+    return {
+      key: k,
+      label,
+      succeeded: v.succeeded ?? 0,
+      failed: v.failed ?? 0,
+      other: v.other ?? 0,
+      total: (v.succeeded ?? 0) + (v.failed ?? 0) + (v.other ?? 0),
+    };
+  });
+
+  const grandTotal = hours.reduce((s, h) => s + h.total, 0);
+  if (grandTotal === 0) {
+    return (
+      <div style={{ marginTop: 12 }}>
+        <div className="small muted" style={{ marginBottom: 4 }}>
+          Hourly pipeline run outcomes (last 24h)
+        </div>
+        <div className="empty small muted" style={{ padding: 12 }}>
+          No pipeline runs in the last 24 hours.
+        </div>
+      </div>
+    );
+  }
+
+  const maxTotal = Math.max(...hours.map((h) => h.total), 1);
+  const niceMax = niceCeil(maxTotal);
+
+  // Layout — mirrors DailyRunsChart.
+  const width = 720;
+  const height = 240;
+  const padX = 56;
+  const padTop = 16;
+  const padBottom = 44;
+  const innerH = height - padTop - padBottom;
+  const groupW = (width - padX * 2) / hours.length;
+  const barW = Math.max(4, Math.min(24, groupW - 2));
+
+  const colorOk = "var(--ok)";
+  const colorErr = "var(--err)";
+  const colorOther = "var(--muted)";
+  const axisColor = "var(--border)";
+  const textColor = "var(--muted)";
+
+  const yTicks = [0, niceMax / 2, niceMax];
+  const labelEvery = Math.max(1, Math.ceil(hours.length / 8));
+
+  return (
+    <div style={{ marginTop: 12 }}>
+      <div className="small muted" style={{ marginBottom: 4 }}>
+        Hourly pipeline run outcomes (last 24h)
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <svg
+          viewBox={`0 0 ${width} ${height}`}
+          width="100%"
+          style={{ maxWidth: width, display: "block" }}
+          role="img"
+          aria-label="Stacked bar chart of hourly pipeline run outcomes for the last 24 hours"
+        >
+          {yTicks.map((t, i) => {
+            const y = padTop + innerH - (t / niceMax) * innerH;
+            return (
+              <g key={i}>
+                <line
+                  x1={padX}
+                  x2={width - padX}
+                  y1={y}
+                  y2={y}
+                  stroke={axisColor}
+                  strokeDasharray={i === 0 ? undefined : "2,3"}
+                />
+                <text x={padX - 6} y={y + 3} textAnchor="end" fontSize={10} fill={textColor}>
+                  {Math.round(t)}
+                </text>
+              </g>
+            );
+          })}
+          {hours.map((h, i) => {
+            const x = padX + i * groupW + (groupW - barW) / 2;
+            const okH = (h.succeeded / niceMax) * innerH;
+            const errH = (h.failed / niceMax) * innerH;
+            const otherH = (h.other / niceMax) * innerH;
+            const baseY = padTop + innerH;
+            const okY = baseY - okH;
+            const errY = okY - errH;
+            const otherY = errY - otherH;
+            const showLabel = i === 0 || i === hours.length - 1 || i % labelEvery === 0;
+            const title = `${h.label} — ${h.succeeded} ok · ${h.failed} failed${h.other ? ` · ${h.other} other` : ""}`;
+            return (
+              <g key={h.key}>
+                <title>{title}</title>
+                {h.succeeded > 0 && (
+                  <rect x={x} y={okY} width={barW} height={okH} fill={colorOk} />
+                )}
+                {h.failed > 0 && (
+                  <rect x={x} y={errY} width={barW} height={errH} fill={colorErr} />
+                )}
+                {h.other > 0 && (
+                  <rect x={x} y={otherY} width={barW} height={otherH} fill={colorOther} opacity={0.6} />
+                )}
+                {showLabel && (
+                  <text
+                    x={x + barW / 2}
+                    y={height - padBottom + 14}
+                    textAnchor="middle"
+                    fontSize={10}
+                    fill={textColor}
+                  >
+                    {h.label}
+                  </text>
+                )}
+              </g>
+            );
+          })}
+          {/* Average runs-per-hour reference line. */}
+          {(() => {
+            const avg = grandTotal / hours.length;
+            if (avg <= 0) return null;
+            const y = padTop + innerH - (avg / niceMax) * innerH;
+            return (
+              <g>
+                <line
+                  x1={padX}
+                  x2={width - padX}
+                  y1={y}
+                  y2={y}
+                  stroke="var(--accent)"
+                  strokeDasharray="5,4"
+                  strokeWidth={1.5}
+                  opacity={0.85}
+                >
+                  <title>{`Average: ${avg.toFixed(1)} runs/hour`}</title>
+                </line>
+                <text
+                  x={width - padX - 4}
+                  y={y - 4}
+                  textAnchor="end"
+                  fontSize={10}
+                  fill="var(--accent)"
+                >
+                  avg {avg.toFixed(1)}
+                </text>
+              </g>
+            );
+          })()}
+        </svg>
+      </div>
+      <div className="small muted" style={{ display: "flex", gap: 14, marginTop: 4 }}>
+        <span><span style={{ display: "inline-block", width: 10, height: 10, background: colorOk, borderRadius: 2, marginRight: 4, verticalAlign: "middle" }} />Succeeded</span>
+        <span><span style={{ display: "inline-block", width: 10, height: 10, background: colorErr, borderRadius: 2, marginRight: 4, verticalAlign: "middle" }} />Failed</span>
+        <span><span style={{ display: "inline-block", width: 10, height: 10, background: colorOther, borderRadius: 2, marginRight: 4, verticalAlign: "middle", opacity: 0.6 }} />Other</span>
+      </div>
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1173,7 +1468,7 @@ function SparkPoolsSection({ sparkPools, runMeta }: { sparkPools: import("../typ
 
   return (
     <section className="section">
-      <h2>Spark execution (last {window} days)<ProvenanceBadge meta={runMeta ?? null} module="spark_pools" /></h2>
+      <h2>Spark execution (last {window} days)<ProvenanceBadge meta={runMeta ?? null} module="spark_pools" /><ReanalyzeButton modules={["spark_pools"]} days={window} title="Re-run the Spark analyzer for this workspace" /></h2>
       <div className="grid cols-3">
         <StatCard
           label="Spark runs"
@@ -1222,7 +1517,21 @@ function SparkPoolsSection({ sparkPools, runMeta }: { sparkPools: import("../typ
         </tbody>
       </table>
       {sparkPools.spark_runs && sparkPools.spark_runs.length > 0 && (
-        <SparkDailyBars runs={sparkPools.spark_runs} windowDays={28} />
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            gap: 16,
+            marginTop: 12,
+          }}
+        >
+          <div style={{ flex: "1 1 360px", minWidth: 0 }}>
+            <SparkDailyBars runs={sparkPools.spark_runs} windowDays={28} />
+          </div>
+          <div style={{ flex: "1 1 360px", minWidth: 0 }}>
+            <SparkHourlyBars runs={sparkPools.spark_runs} />
+          </div>
+        </div>
       )}
       {sparkPools.errors && sparkPools.errors.length > 0 && (
         <div className="small muted" style={{ marginTop: 6 }}>
@@ -1411,6 +1720,221 @@ function SparkDailyBars({
   );
 }
 
+/**
+ * Hourly companion to ``SparkDailyBars`` covering the trailing 24 hours.
+ * Per-pool stacked bars of vCore-hours bucketed into 1-hour bins ending at
+ * the current local hour (inclusive). Shares the palette, layout
+ * conventions and tooltip style of the 28d chart so the two read as a
+ * single split-view.
+ */
+function SparkHourlyBars({
+  runs,
+}: {
+  runs: import("../types").SparkRunRecord[];
+}) {
+  const windowHours = 24;
+  // Bucket boundary = top of the current local hour. We include the
+  // current (in-progress) hour so the rightmost bin shows activity
+  // happening "now". Bins are ``[hourStart, hourStart + 1h)``.
+  const now = new Date();
+  const currentHourStart = new Date(now);
+  currentHourStart.setMinutes(0, 0, 0);
+  const firstBinStart = new Date(
+    currentHourStart.getTime() - (windowHours - 1) * 60 * 60 * 1000,
+  );
+  const cutoff = firstBinStart;
+
+  const vCoreOf = (r: import("../types").SparkRunRecord): number => {
+    if (typeof r.vcore_hours === "number" && r.vcore_hours > 0) return r.vcore_hours;
+    if (typeof r.est_cu_hours_fabric_spark === "number" && r.est_cu_hours_fabric_spark > 0) {
+      return r.est_cu_hours_fabric_spark / 0.5;
+    }
+    return 0;
+  };
+
+  const pools = (() => {
+    const seen = new Set<string>();
+    for (const r of runs) {
+      if (!r.submitted_at) continue;
+      const t = new Date(r.submitted_at);
+      if (Number.isNaN(t.getTime()) || t < cutoff) continue;
+      seen.add(r.pool);
+    }
+    return Array.from(seen).sort();
+  })();
+  if (pools.length === 0) {
+    return (
+      <div style={{ marginTop: 16 }}>
+        <div className="small muted" style={{ marginBottom: 6 }}>
+          Spark vCore-hr per hour (last 24h)
+        </div>
+        <div className="empty small muted" style={{ padding: 12 }}>
+          No Spark runs in the last 24 hours.
+        </div>
+      </div>
+    );
+  }
+
+  type HourBin = { key: string; label: string; perPool: Record<string, number>; total: number };
+  const bins: HourBin[] = [];
+  for (let i = 0; i < windowHours; i++) {
+    const start = new Date(firstBinStart.getTime() + i * 60 * 60 * 1000);
+    const key = start.toISOString();
+    const label = `${String(start.getHours()).padStart(2, "0")}:00`;
+    const perPool: Record<string, number> = {};
+    for (const p of pools) perPool[p] = 0;
+    bins.push({ key, label, perPool, total: 0 });
+  }
+  const indexFor = (ms: number) =>
+    Math.floor((ms - firstBinStart.getTime()) / (60 * 60 * 1000));
+
+  for (const r of runs) {
+    if (!r.submitted_at) continue;
+    const t = new Date(r.submitted_at);
+    if (Number.isNaN(t.getTime()) || t < cutoff) continue;
+    const idx = indexFor(t.getTime());
+    if (idx < 0 || idx >= bins.length) continue;
+    const bin = bins[idx];
+    const v = vCoreOf(r);
+    bin.perPool[r.pool] = (bin.perPool[r.pool] ?? 0) + v;
+    bin.total += v;
+  }
+
+  const total = bins.reduce((s, b) => s + b.total, 0);
+  if (total <= 0) {
+    return (
+      <div style={{ marginTop: 16 }}>
+        <div className="small muted" style={{ marginBottom: 6 }}>
+          Spark vCore-hr per hour (last 24h)
+        </div>
+        <div className="empty small muted" style={{ padding: 12 }}>
+          No Spark vCore-hours observed in the last 24 hours.
+        </div>
+      </div>
+    );
+  }
+  const maxV = Math.max(0.001, ...bins.map((b) => b.total));
+
+  const PALETTE = ["#2f81f7", "#3fb950", "#d29922", "#a371f7", "#db61a2", "#e36b6b", "#1f9ea3", "#bf6a02"];
+  const colorFor = (pool: string) => PALETTE[pools.indexOf(pool) % PALETTE.length];
+
+  const width = 720;
+  const height = 240;
+  const padX = 56;
+  const padTop = 16;
+  const padBottom = 44;
+  const innerH = height - padTop - padBottom;
+  const groupW = (width - padX * 2) / bins.length;
+  const barW = Math.max(4, Math.min(24, groupW - 2));
+
+  return (
+    <div style={{ marginTop: 16, overflowX: "auto" }}>
+      <div className="small muted" style={{ marginBottom: 6 }}>
+        {pools.map((p) => (
+          <span key={p} style={{ marginRight: 12, display: "inline-block" }}>
+            <span style={{ display: "inline-block", width: 10, height: 10, background: colorFor(p), marginRight: 4, verticalAlign: "middle" }} />
+            <code>{p}</code>
+          </span>
+        ))}
+        <span>Spark vCore-hr per hour (last 24h)</span>
+      </div>
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        width="100%"
+        style={{ maxWidth: width, fontSize: 10 }}
+        role="img"
+        aria-label="Spark vCore-hours per hour per pool for the last 24 hours"
+      >
+        <line x1={padX} x2={width - padX} y1={height - padBottom} y2={height - padBottom} stroke="currentColor" opacity={0.3} />
+        <line x1={padX} x2={padX} y1={padTop} y2={height - padBottom} stroke="currentColor" opacity={0.3} />
+        {[0, 0.5, 1].map((t, i) => (
+          <g key={i}>
+            <text x={padX - 6} y={height - padBottom - innerH * t + 3} textAnchor="end" fill="currentColor" opacity={0.7}>
+              {(maxV * t).toFixed(maxV >= 10 ? 0 : 1)}
+            </text>
+            <line
+              x1={padX}
+              x2={width - padX}
+              y1={height - padBottom - innerH * t}
+              y2={height - padBottom - innerH * t}
+              stroke="currentColor"
+              opacity={i === 0 ? 0.3 : 0.08}
+            />
+          </g>
+        ))}
+        {bins.map((b, i) => {
+          const cx = padX + groupW * i + groupW / 2;
+          const baseY = height - padBottom;
+          const labelEvery = Math.max(1, Math.ceil(bins.length / 8));
+          let acc = 0;
+          return (
+            <g key={b.key}>
+              {pools.map((p) => {
+                const v = b.perPool[p] ?? 0;
+                if (v <= 0) return null;
+                const h = (v / maxV) * innerH;
+                const y = baseY - acc - h;
+                acc += h;
+                return (
+                  <rect
+                    key={p}
+                    x={cx - barW / 2}
+                    y={y}
+                    width={barW}
+                    height={h}
+                    fill={colorFor(p)}
+                  >
+                    <title>{`${b.label} — ${p}: ${v.toFixed(2)} vCore-hr`}</title>
+                  </rect>
+                );
+              })}
+              {i % labelEvery === 0 && (
+                <text x={cx} y={height - padBottom + 14} textAnchor="middle" fill="currentColor" opacity={0.8}>
+                  {b.label}
+                </text>
+              )}
+            </g>
+          );
+        })}
+        {/* Average vCore-hr per hour reference line. */}
+        {(() => {
+          const avg = total / bins.length;
+          if (avg <= 0) return null;
+          const y = height - padBottom - (avg / maxV) * innerH;
+          return (
+            <g>
+              <line
+                x1={padX}
+                x2={width - padX}
+                y1={y}
+                y2={y}
+                stroke="#c9d1d9"
+                strokeDasharray="5,4"
+                strokeWidth={1.5}
+                opacity={0.85}
+              >
+                <title>{`Average: ${avg.toFixed(2)} vCore-hr/hour`}</title>
+              </line>
+              <text
+                x={width - padX - 4}
+                y={y - 4}
+                textAnchor="end"
+                fill="currentColor"
+                opacity={0.85}
+              >
+                avg {avg.toFixed(maxV >= 10 ? 1 : 2)}
+              </text>
+            </g>
+          );
+        })()}
+      </svg>
+      <div className="small muted" style={{ marginTop: 4 }}>
+        Window: last 24h · {total.toFixed(2)} vCore-hr total
+      </div>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Serverless SQL query statistics
 // ---------------------------------------------------------------------------
@@ -1427,7 +1951,10 @@ function ServerlessSection({ serverless, runMeta }: { serverless: import("../typ
 
   // Sort ascending by day so charts read left-to-right.
   const sorted = [...daily].sort((a, b) => a.day.localeCompare(b.day));
-  const last7 = sorted.slice(-7);
+  const last28 = sorted.slice(-28);
+  const hourly = (serverless.hourly_usage ?? [])
+    .slice()
+    .sort((a, b) => a.hour.localeCompare(b.hour));
 
   const totalRequests = sorted.reduce((s, d) => s + (d.request_count ?? 0), 0);
   const totalDataMb = sorted.reduce((s, d) => s + (d.data_processed_mb ?? 0), 0);
@@ -1472,7 +1999,7 @@ function ServerlessSection({ serverless, runMeta }: { serverless: import("../typ
 
   return (
     <section className="section">
-      <h2>Serverless SQL ({windowDays} days observed)<ProvenanceBadge meta={runMeta ?? null} module="serverless_pools" /></h2>
+      <h2>Serverless SQL ({windowDays} days observed)<ProvenanceBadge meta={runMeta ?? null} module="serverless_pools" /><ReanalyzeButton modules={["serverless_pools"]} days={windowDays} /></h2>
       <div className={hasDuration ? "grid cols-5" : "grid cols-4"}>
         <StatCard
           label="Avg daily queries"
@@ -1511,8 +2038,178 @@ function ServerlessSection({ serverless, runMeta }: { serverless: import("../typ
         />
       </div>
 
-      {last7.length > 0 && <ServerlessClusteredBars days={last7} />}
+      {last28.length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginTop: 12 }}>
+          <div style={{ flex: "1 1 360px", minWidth: 0 }}>
+            <ServerlessClusteredBars days={last28} />
+          </div>
+          <div style={{ flex: "1 1 360px", minWidth: 0 }}>
+            <ServerlessHourlyBars hours={hourly} />
+          </div>
+        </div>
+      )}
     </section>
+  );
+}
+
+function ServerlessHourlyBars({ hours }: { hours: import("../types").ServerlessHourlyUsage[] }) {
+  // 24h companion to ServerlessClusteredBars. Pre-seed 24 hourly bins
+  // anchored to the top of the current hour so the chart always shows a
+  // full window even when the SQL query returned fewer rows.
+  const width = 720;
+  const height = 220;
+  const padX = 56;
+  const padTop = 16;
+  const padBottom = 44;
+  const innerH = height - padTop - padBottom;
+
+  const now = new Date();
+  const anchor = new Date(Date.UTC(
+    now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), now.getUTCHours(),
+  ));
+  const bins: { iso: string; label: string; requests: number; mb: number }[] = [];
+  for (let i = 23; i >= 0; i--) {
+    const d = new Date(anchor.getTime() - i * 3600_000);
+    const iso = d.toISOString().replace(/\.\d{3}Z$/, "Z");
+    const hh = String(d.getHours()).padStart(2, "0");
+    bins.push({ iso, label: `${hh}:00`, requests: 0, mb: 0 });
+  }
+  const idxByIso = new Map(bins.map((b, i) => [b.iso, i]));
+  for (const h of hours) {
+    // Normalise the incoming key to second precision to match our bin ISO.
+    const normalised = h.hour.replace(/\.\d+Z$/, "Z");
+    const i = idxByIso.get(normalised);
+    if (i === undefined) continue;
+    bins[i].requests += h.request_count ?? 0;
+    bins[i].mb += h.data_processed_mb ?? 0;
+  }
+
+  const totalRequests = bins.reduce((s, b) => s + b.requests, 0);
+  const totalMb = bins.reduce((s, b) => s + b.mb, 0);
+
+  if (totalRequests === 0 && totalMb === 0) {
+    return (
+      <div style={{ marginTop: 16 }}>
+        <div className="small muted" style={{ marginBottom: 6 }}>Last 24 hours (hourly)</div>
+        <div className="small muted" style={{
+          border: "1px dashed currentColor", borderRadius: 4, padding: 16,
+          opacity: 0.6, textAlign: "center",
+        }}>
+          No serverless query activity in the last 24h, or this run pre-dates hourly
+          bucketing &mdash; re-analyze serverless to populate.
+        </div>
+      </div>
+    );
+  }
+
+  const maxRequests = Math.max(1, ...bins.map((b) => b.requests));
+  const maxMb = Math.max(1, ...bins.map((b) => b.mb));
+  const groupW = (width - padX * 2) / bins.length;
+  const barW = Math.max(3, Math.min(14, (groupW - 4) / 2));
+
+  return (
+    <div style={{ marginTop: 16, overflowX: "auto" }}>
+      <div className="small muted" style={{ marginBottom: 6 }}>
+        <span style={{ display: "inline-block", width: 10, height: 10, background: "#2f81f7", marginRight: 4, verticalAlign: "middle" }} />
+        Queries (left axis)
+        {"  "}
+        <span style={{ display: "inline-block", width: 10, height: 10, background: "#f7942f", margin: "0 4px 0 12px", verticalAlign: "middle" }} />
+        MB scanned (right axis)
+        {"  \u00B7  "}Last 24h
+      </div>
+      <svg viewBox={`0 0 ${width} ${height}`} width="100%" style={{ maxWidth: width, fontSize: 10 }} role="img" aria-label="Serverless SQL last 24 hours clustered bar chart">
+        <line x1={padX} x2={width - padX} y1={height - padBottom} y2={height - padBottom} stroke="currentColor" opacity={0.3} />
+        <line x1={padX} x2={padX} y1={padTop} y2={height - padBottom} stroke="currentColor" opacity={0.3} />
+        <line x1={width - padX} x2={width - padX} y1={padTop} y2={height - padBottom} stroke="currentColor" opacity={0.3} />
+        {[0, 0.5, 1].map((t, i) => (
+          <g key={i}>
+            <text x={padX - 6} y={height - padBottom - innerH * t + 3} textAnchor="end" fill="currentColor" opacity={0.7}>
+              {Math.round(maxRequests * t)}
+            </text>
+            <text x={width - padX + 6} y={height - padBottom - innerH * t + 3} textAnchor="start" fill="currentColor" opacity={0.7}>
+              {fmtMb(maxMb * t)}
+            </text>
+          </g>
+        ))}
+        {bins.map((b, i) => {
+          const cx = padX + groupW * i + groupW / 2;
+          const reqH = (b.requests / maxRequests) * innerH;
+          const mbH = (b.mb / maxMb) * innerH;
+          const reqX = cx - barW - 1;
+          const mbX = cx + 1;
+          const baseY = height - padBottom;
+          // Label every other bin to avoid overlap at narrow widths.
+          const showLabel = i % 2 === 0;
+          return (
+            <g key={b.iso}>
+              <rect x={reqX} y={baseY - reqH} width={barW} height={reqH} fill="#2f81f7">
+                <title>{`${b.label}: ${fmtNum(b.requests)} queries`}</title>
+              </rect>
+              <rect x={mbX} y={baseY - mbH} width={barW} height={mbH} fill="#f7942f">
+                <title>{`${b.label}: ${fmtMb(b.mb)} scanned`}</title>
+              </rect>
+              {showLabel && (
+                <text x={cx} y={height - padBottom + 14} textAnchor="middle" fill="currentColor" opacity={0.8}>
+                  {b.label}
+                </text>
+              )}
+            </g>
+          );
+        })}
+        {/* Average reference lines \u2014 queries on the left axis (blue),
+         * MB on the right axis (orange). Each line is drawn against its
+         * own series\u2019 scale so it lines up with the matching bars. */}
+        {(() => {
+          const avgReq = totalRequests / bins.length;
+          const avgMb = totalMb / bins.length;
+          const baseY = height - padBottom;
+          const yReq = baseY - (avgReq / maxRequests) * innerH;
+          const yMb = baseY - (avgMb / maxMb) * innerH;
+          return (
+            <g>
+              {avgReq > 0 && (
+                <>
+                  <line
+                    x1={padX}
+                    x2={width - padX}
+                    y1={yReq}
+                    y2={yReq}
+                    stroke="#2f81f7"
+                    strokeDasharray="5,4"
+                    strokeWidth={1.5}
+                    opacity={0.85}
+                  >
+                    <title>{`Average queries: ${avgReq.toFixed(1)} per hour`}</title>
+                  </line>
+                  <text x={padX + 4} y={yReq - 4} textAnchor="start" fill="#2f81f7">
+                    avg {avgReq.toFixed(1)}
+                  </text>
+                </>
+              )}
+              {avgMb > 0 && (
+                <>
+                  <line
+                    x1={padX}
+                    x2={width - padX}
+                    y1={yMb}
+                    y2={yMb}
+                    stroke="#f7942f"
+                    strokeDasharray="5,4"
+                    strokeWidth={1.5}
+                    opacity={0.85}
+                  >
+                    <title>{`Average data: ${fmtMb(avgMb)} per hour`}</title>
+                  </line>
+                  <text x={width - padX - 4} y={yMb - 4} textAnchor="end" fill="#f7942f">
+                    avg {fmtMb(avgMb)}
+                  </text>
+                </>
+              )}
+            </g>
+          );
+        })()}
+      </svg>
+    </div>
   );
 }
 
@@ -1540,7 +2237,7 @@ function ServerlessClusteredBars({ days }: { days: import("../types").Serverless
         <span style={{ display: "inline-block", width: 10, height: 10, background: "#f7942f", margin: "0 4px 0 12px", verticalAlign: "middle" }} />
         MB scanned (right axis)
       </div>
-      <svg viewBox={`0 0 ${width} ${height}`} width="100%" style={{ maxWidth: width, fontSize: 10 }} role="img" aria-label="Serverless SQL last 7 days clustered bar chart">
+      <svg viewBox={`0 0 ${width} ${height}`} width="100%" style={{ maxWidth: width, fontSize: 10 }} role="img" aria-label={`Serverless SQL last ${days.length} days clustered bar chart`}>
         <line x1={padX} x2={width - padX} y1={height - padBottom} y2={height - padBottom} stroke="currentColor" opacity={0.3} />
         <line x1={padX} x2={padX} y1={padTop} y2={height - padBottom} stroke="currentColor" opacity={0.3} />
         <line x1={width - padX} x2={width - padX} y1={padTop} y2={height - padBottom} stroke="currentColor" opacity={0.3} />

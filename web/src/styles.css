@@ -353,13 +353,47 @@ fieldset legend { color: var(--muted); padding: 0 6px; }
 .report-page { padding: 12px 0; }
 .report-page h1 { margin: 0 0 4px; font-size: 22px; }
 .report-page h2 { margin: 16px 0 6px; font-size: 16px; border-bottom: 1px solid var(--border); padding-bottom: 4px; }
-.report-section { page-break-inside: avoid; margin-bottom: 12px; }
-.report-workspace { page-break-before: always; padding-top: 12px; }
+.report-section { margin-bottom: 12px; }
+/* Keep table headers and individual rows together, but let big sections
+ * break across pages instead of forcing a whole section onto one sheet
+ * (which silently clips the overflow in Chrome's PDF renderer). */
+.report-section table { break-inside: auto; page-break-inside: auto; }
+.report-section thead { display: table-header-group; }
+.report-section tfoot { display: table-footer-group; }
+.report-section tr { break-inside: avoid; page-break-inside: avoid; }
+.report-workspace { page-break-before: always; break-before: page; padding-top: 12px; }
 @media print {
   .topbar, .footer, .picker, nav.nav, .no-print { display: none !important; }
+  /* The default app shell clips horizontally and caps width at 1400px
+   * for readability; for print we have to release both so wide tables
+   * don't get cropped at the right margin. */
+  html, body, #root, .layout, .content {
+    overflow: visible !important;
+    max-width: none !important;
+    width: auto !important;
+    height: auto !important;
+    min-height: 0 !important;
+  }
   body, html, .layout, .content { background: white !important; color: black !important; }
-  .card { border: 1px solid #888 !important; box-shadow: none !important; }
-  table { font-size: 10pt; }
+  .card { border: 1px solid #888 !important; box-shadow: none !important; break-inside: avoid; page-break-inside: avoid; }
+  table { font-size: 9.5pt; width: 100% !important; table-layout: auto; }
+  /* Long IDs / titles / detail blurbs must wrap rather than push the
+   * table past the page width. */
+  th, td {
+    word-break: break-word;
+    overflow-wrap: anywhere;
+    vertical-align: top;
+  }
+  /* Stat-card grids stay on one row at screen widths; in print they
+   * routinely overflow the page width, so collapse to a 2-up grid. */
+  .grid.cols-4, .grid.cols-3, .grid.cols-5 {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+  /* Print the wide Workspaces table in landscape so 11 columns fit
+   * without truncation. Browsers that don't honour named pages just
+   * fall back to portrait. */
+  @page landscape { size: A4 landscape; margin: 12mm 10mm; }
+  .report-section.landscape { page: landscape; }
   .pill { border: 1px solid #888 !important; }
   .print-only { display: block; }
   a { color: black !important; text-decoration: none !important; }

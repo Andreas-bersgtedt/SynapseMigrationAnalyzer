@@ -78,9 +78,13 @@ DMVs.
   `sql_pools.list_by_workspace`; T-SQL against `sys.objects`,
   `sys.sql_modules`, `sys.parameters`, `sys.tables`, `sys.indexes`,
   `sys.dm_pdw_nodes_db_partition_stats`, `sys.dm_pdw_exec_requests`,
-  `sys.dm_pdw_exec_sessions`, `sys.dm_pdw_sql_requests`. All DMV
+  `sys.dm_pdw_exec_sessions`, `INFORMATION_SCHEMA.TABLES`. All DMV
   scans carry `OPTION (LABEL = 'sma:<query>')` so the analyzer's
-  own activity is auditable in `dm_pdw_exec_requests`.
+  own activity is auditable in `dm_pdw_exec_requests`. The
+  top-consumed-tables collector additionally persists parsed-request
+  metadata to a local cache under
+  `output/.cache/dedicated_pools_workload/` (no PII beyond what was
+  already in the submitted SQL — see [05. Code objects](05-code-objects.md)).
 - **`serverless_pools`** — `sys.databases`, `sys.external_tables`,
   `sys.external_data_sources`, `sys.dm_exec_requests_history`.
 - **`spark_pools`** — `big_data_pools.list_by_workspace`;
